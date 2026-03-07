@@ -3,14 +3,28 @@
 #include <Windows.h>
 
 #include <array>
+#include <future>
 #include <string>
+
+#include "DebuggerProtocol.h"
 
 namespace idmcp {
 
 namespace {
 
+inline constexpr DWORD kPipeInstanceCount = 8;
+inline constexpr std::size_t kMaxQueuedRequests = 64;
+
 [[nodiscard]] HANDLE AsHandle(void* value) {
     return static_cast<HANDLE>(value);
+}
+
+[[nodiscard]] std::string MakePipeError(const std::string& code, const std::string& detail) {
+    return BuildMessage({
+        {"status", "error"},
+        {"code", code},
+        {"detail", detail},
+    });
 }
 
 }  // namespace
@@ -26,7 +40,8 @@ void IpcServer::Start() {
     if (running_.exchange(true)) {
         return;
     }
-    worker_ = std::thread(&IpcServer::Run, this);
+    workerThread_ = std::thread(&IpcServer::ProcessQueue, this);
+    acceptThread_ = std::thread(&IpcServer::Run, this);
 }
 
 void IpcServer::Stop() {
@@ -34,14 +49,30 @@ void IpcServer::Stop() {
         return;
     }
 
+    queueReady_.notify_all();
+
     if (const HANDLE wakeHandle = CreateFileA(pipeName_.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, 0, nullptr);
         wakeHandle != INVALID_HANDLE_VALUE) {
         CloseHandle(wakeHandle);
     }
 
-    if (worker_.joinable()) {
-        worker_.join();
+    if (acceptThread_.joinable()) {
+        acceptThread_.join();
     }
+
+    FailPendingRequests();
+    queueReady_.notify_all();
+
+    if (workerThread_.joinable()) {
+        workerThread_.join();
+    }
+
+    for (auto& clientThread : clientThreads_) {
+        if (clientThread.joinable()) {
+            clientThread.join();
+        }
+    }
+    clientThreads_.clear();
 }
 
 void IpcServer::Run() {
@@ -50,7 +81,7 @@ void IpcServer::Run() {
             pipeName_.c_str(),
             PIPE_ACCESS_DUPLEX,
             PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
-            1,
+            kPipeInstanceCount,
             64 * 1024,
             64 * 1024,
             1000,
@@ -68,21 +99,99 @@ void IpcServer::Run() {
             continue;
         }
 
-        const bool served = ServeClient(pipe);
-        (void)served;
-        DisconnectNamedPipe(pipe);
-        CloseHandle(pipe);
+        clientThreads_.emplace_back(&IpcServer::ServeClient, this, pipe);
     }
 }
 
-bool IpcServer::ServeClient(void* pipeHandle) const {
+void IpcServer::ProcessQueue() {
+    while (true) {
+        WorkItem item;
+        {
+            std::unique_lock lock(queueMutex_);
+            queueReady_.wait(lock, [this] {
+                return !running_.load() || !workQueue_.empty();
+            });
+
+            if (workQueue_.empty()) {
+                if (!running_.load()) {
+                    break;
+                }
+                continue;
+            }
+
+            item = std::move(workQueue_.front());
+            workQueue_.pop();
+        }
+
+        try {
+            item.responsePromise.set_value(handler_(item.request));
+        } catch (...) {
+            item.responsePromise.set_value(MakePipeError("internal_error", "native request handler raised an exception"));
+        }
+    }
+}
+
+void IpcServer::ServeClient(void* pipeHandle) {
+    const HANDLE pipe = AsHandle(pipeHandle);
     const auto request = ReadFrame(pipeHandle);
     if (request.empty()) {
-        return false;
+        DisconnectNamedPipe(pipe);
+        CloseHandle(pipe);
+        return;
     }
 
-    const auto response = handler_(request);
-    return WriteFrame(pipeHandle, response);
+    if (!running_.load()) {
+        const auto response = MakePipeError("server_stopping", "server is shutting down");
+        WriteFrame(pipeHandle, response);
+        DisconnectNamedPipe(pipe);
+        CloseHandle(pipe);
+        return;
+    }
+
+    std::promise<std::string> responsePromise;
+    auto responseFuture = responsePromise.get_future();
+
+    {
+        std::scoped_lock lock(queueMutex_);
+        if (workQueue_.size() >= kMaxQueuedRequests) {
+            const auto response = MakePipeError("server_busy", "request queue is full");
+            WriteFrame(pipeHandle, response);
+            DisconnectNamedPipe(pipe);
+            CloseHandle(pipe);
+            return;
+        }
+
+        workQueue_.push(WorkItem{
+            .request = request,
+            .responsePromise = std::move(responsePromise),
+        });
+    }
+    queueReady_.notify_one();
+
+    std::string response;
+    try {
+        response = responseFuture.get();
+    } catch (...) {
+        response = MakePipeError("internal_error", "response future failed");
+    }
+
+    WriteFrame(pipeHandle, response);
+    DisconnectNamedPipe(pipe);
+    CloseHandle(pipe);
+}
+
+void IpcServer::FailPendingRequests() {
+    std::queue<WorkItem> pending;
+    {
+        std::scoped_lock lock(queueMutex_);
+        std::swap(pending, workQueue_);
+    }
+
+    while (!pending.empty()) {
+        auto item = std::move(pending.front());
+        pending.pop();
+        item.responsePromise.set_value(MakePipeError("server_stopping", "server is shutting down"));
+    }
 }
 
 std::string IpcServer::ReadFrame(void* pipeHandle) const {

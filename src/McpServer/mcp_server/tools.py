@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import csv
+import subprocess
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
+from .pipe_client import NativeRequestError
 from .session_manager import SessionManager
 
 
@@ -16,16 +19,76 @@ def _split_records(records: list[str], expected_parts: int) -> list[list[str]]:
     return parsed
 
 
+def _list_process_matches(process_name: str, exact_match: bool) -> list[dict[str, int | str]]:
+    normalized = process_name.strip()
+    if not normalized:
+        raise ValueError("process_name must not be empty")
+
+    exact_candidates = {normalized.lower()}
+    if "." not in normalized:
+        exact_candidates.add(f"{normalized}.exe".lower())
+
+    completed = subprocess.run(
+        ["tasklist", "/fo", "csv", "/nh"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    matches: list[dict[str, int | str]] = []
+    for row in csv.reader(completed.stdout.splitlines()):
+        if len(row) < 2:
+            continue
+
+        name = row[0].strip()
+        pid_text = row[1].strip()
+        try:
+            pid = int(pid_text)
+        except ValueError:
+            continue
+
+        lowered_name = name.lower()
+        if exact_match:
+            matched = lowered_name in exact_candidates
+        else:
+            matched = normalized.lower() in lowered_name
+
+        if matched:
+            matches.append({"name": name, "pid": pid})
+
+    return matches
+
+
 def create_mcp(session_manager: SessionManager) -> FastMCP:
     mcp = FastMCP("InternalDebuggerMCP", log_level="WARNING")
 
     async def request(pid: int, command: str, **fields: Any) -> dict[str, list[str]]:
-        response = await asyncio.to_thread(session_manager.get(pid).client.request, command, **fields)
-        if response.status != "ok":
-            code = response.one("code", "unknown_error")
-            detail = response.one("detail", "native request failed")
-            raise RuntimeError(f"{code}: {detail}")
-        return response.fields
+        try:
+            response = await asyncio.to_thread(session_manager.get(pid).client.request, command, **fields)
+            response.raise_for_error()
+            return response.fields
+        except NativeRequestError as error:
+            if error.code == "server_busy":
+                raise RuntimeError("server_busy: native request queue is full; retry the request") from error
+            if error.code == "server_stopping":
+                session_manager.reset(pid)
+                raise RuntimeError(
+                    "server_stopping: the target debugger is restarting or shutting down; retry after the pipe recovers"
+                ) from error
+            raise RuntimeError(f"{error.code}: {error.detail}") from error
+        except OSError as error:
+            session_manager.reset(pid)
+            raise RuntimeError(f"transport_error: {error}") from error
+
+    @mcp.tool(description="Find already running local Windows processes by name and return matching PIDs.")
+    async def find_process_pid(process_name: str, exact_match: bool = True) -> dict[str, Any]:
+        matches = await asyncio.to_thread(_list_process_matches, process_name, exact_match)
+        return {
+            "query": process_name,
+            "exact_match": exact_match,
+            "match_count": len(matches),
+            "matches": matches,
+        }
 
     @mcp.tool(description="Check whether the injected debugger pipe for a target PID is reachable and report basic server state.")
     async def ping(pid: int) -> dict[str, Any]:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ctypes
+import time
 from ctypes import wintypes
 from dataclasses import dataclass
 from typing import Iterable
@@ -11,6 +12,7 @@ GENERIC_READ = 0x80000000
 GENERIC_WRITE = 0x40000000
 OPEN_EXISTING = 3
 FILE_ATTRIBUTE_NORMAL = 0x00000080
+ERROR_PIPE_BUSY = 231
 
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 
@@ -75,6 +77,14 @@ def _parse_frame(frame: str) -> dict[str, list[str]]:
     return parsed
 
 
+class NativeRequestError(RuntimeError):
+    def __init__(self, code: str, detail: str, response: "PipeResponse | None" = None) -> None:
+        super().__init__(f"{code}: {detail}")
+        self.code = code
+        self.detail = detail
+        self.response = response
+
+
 @dataclass(slots=True)
 class PipeResponse:
     raw: str
@@ -93,6 +103,14 @@ class PipeResponse:
     def many(self, key: str) -> list[str]:
         return list(self.fields.get(key, []))
 
+    def raise_for_error(self, default_detail: str = "native request failed") -> None:
+        if self.status == "ok":
+            return
+
+        code = self.one("code", "unknown_error") or "unknown_error"
+        detail = self.one("detail", default_detail) or default_detail
+        raise NativeRequestError(code, detail, self)
+
 
 class PipeClient:
     def __init__(self, pid: int, timeout_ms: int = 2000) -> None:
@@ -101,20 +119,29 @@ class PipeClient:
         self.pipe_name = rf"\\.\pipe\InternalDebuggerMCP_{pid}"
 
     def request(self, command: str, **fields: str | int) -> PipeResponse:
-        if not WaitNamedPipeW(self.pipe_name, self.timeout_ms):
-            _raise_last_error(f"WaitNamedPipe failed for {self.pipe_name}")
+        deadline = time.monotonic() + (self.timeout_ms / 1000.0)
+        handle = INVALID_HANDLE_VALUE
+        while handle == INVALID_HANDLE_VALUE:
+            remaining_ms = max(0, int((deadline - time.monotonic()) * 1000))
+            if not WaitNamedPipeW(self.pipe_name, remaining_ms):
+                _raise_last_error(f"WaitNamedPipe failed for {self.pipe_name}")
 
-        handle = CreateFileW(
-            self.pipe_name,
-            GENERIC_READ | GENERIC_WRITE,
-            0,
-            None,
-            OPEN_EXISTING,
-            FILE_ATTRIBUTE_NORMAL,
-            None,
-        )
-        if handle == INVALID_HANDLE_VALUE:
-            _raise_last_error(f"CreateFile failed for {self.pipe_name}")
+            handle = CreateFileW(
+                self.pipe_name,
+                GENERIC_READ | GENERIC_WRITE,
+                0,
+                None,
+                OPEN_EXISTING,
+                FILE_ATTRIBUTE_NORMAL,
+                None,
+            )
+            if handle != INVALID_HANDLE_VALUE:
+                break
+
+            if ctypes.get_last_error() != ERROR_PIPE_BUSY or time.monotonic() >= deadline:
+                _raise_last_error(f"CreateFile failed for {self.pipe_name}")
+
+            time.sleep(0.05)
 
         try:
             frame = _build_frame(
