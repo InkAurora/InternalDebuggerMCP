@@ -5,9 +5,14 @@ import sys
 
 
 def main() -> None:
-    project_root = pathlib.Path(__file__).resolve().parent
-    if str(project_root) not in sys.path:
-        sys.path.insert(0, str(project_root))
+    server_root = pathlib.Path(__file__).resolve().parent
+    vendor_root = server_root / "vendor"
+
+    if vendor_root.exists() and str(vendor_root) not in sys.path:
+        sys.path.insert(0, str(vendor_root))
+
+    if str(server_root) not in sys.path:
+        sys.path.insert(0, str(server_root))
 
     from mcp_server.server import main as run_server
 

@@ -7,6 +7,7 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
+from .package_layout import build_injection_setup
 from .pipe_client import NativeRequestError
 from .session_manager import SessionManager
 
@@ -89,6 +90,10 @@ def create_mcp(session_manager: SessionManager) -> FastMCP:
             "match_count": len(matches),
             "matches": matches,
         }
+
+    @mcp.tool(description="Return the injector path, DLL path, and command templates needed to inject the debugger into a target process.")
+    async def get_injection_setup() -> dict[str, Any]:
+        return await asyncio.to_thread(build_injection_setup)
 
     @mcp.tool(description="Check whether the injected debugger pipe for a target PID is reachable and report basic server state.")
     async def ping(pid: int) -> dict[str, Any]:

@@ -6,6 +6,8 @@ The current implementation assumes the DLL is already injected into the target p
 
 The server also exposes `find_process_pid`, which queries Windows for already running processes and returns matching PIDs before you call the PID-based debugger tools.
 
+The server exposes `get_injection_setup`, which returns the injector path, DLL path, command templates, and MCP launcher path for the current runtime layout. When the server runs from the packaged release zip, these paths point into the extracted package instead of the repository.
+
 ## Install
 
 ```powershell
@@ -16,6 +18,32 @@ python -m pip install -e .
 
 ```powershell
 python -m mcp_server.server
+```
+
+You can also run the packaged launcher directly. The launcher adds `vendor` to `sys.path`, so a packaged `mcp-server` folder works without a separate `pip install` step.
+
+```powershell
+python .\mcp-server\launch.py
+```
+
+## VS Code MCP Config Example
+
+Use `mcp.json.example` as the template for an extracted package. Replace the path with the actual extraction location.
+
+```json
+{
+  "servers": {
+    "internalDebugger": {
+      "type": "stdio",
+      "command": "python",
+      "args": ["C:/Path/To/InternalDebuggerMCP/mcp-server/launch.py"],
+      "env": {
+        "PYTHONUTF8": "1",
+        "PYTHONUNBUFFERED": "1"
+      }
+    }
+  }
+}
 ```
 
 ## Test

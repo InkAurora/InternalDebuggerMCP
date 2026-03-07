@@ -41,6 +41,36 @@ The Python MCP server expects Python 3.10+.
 
 The MCP server also exposes a local process lookup tool so you can resolve a PID before calling the PID-based debugger tools.
 
+## Release Package
+
+Build a distributable zip with the native binaries at the package root and a ready-to-launch MCP server under `mcp-server`.
+
+```powershell
+.\scripts\package_release.ps1
+```
+
+By default the script:
+
+- builds `Release|x64` with MSBuild;
+- stages a package under `dist\staging\InternalDebuggerMCP`;
+- copies `Injector.exe` and `InternalDebuggerDLL.dll` to the package root;
+- copies the MCP server into `mcp-server` and vendors its Python dependencies into `mcp-server\vendor`;
+- creates `dist\InternalDebuggerMCP-<version>-win-x64.zip`.
+
+Recommended package layout:
+
+- `InternalDebuggerMCP\Injector.exe`
+- `InternalDebuggerMCP\InternalDebuggerDLL.dll`
+- `InternalDebuggerMCP\README.md`
+- `InternalDebuggerMCP\QUICKSTART.txt`
+- `InternalDebuggerMCP\package-manifest.json`
+- `InternalDebuggerMCP\mcp-server\launch.py`
+- `InternalDebuggerMCP\mcp-server\mcp_server\...`
+- `InternalDebuggerMCP\mcp-server\vendor\...`
+- `InternalDebuggerMCP\mcp-server\mcp.json.example`
+
+The packaged MCP server is ready after extraction as long as the end user already has Python 3.10+ installed locally. No additional `pip install` step is required because the package vendors the server dependencies into `mcp-server\vendor`.
+
 ## Smoke Test
 
 Use this workflow to verify that the native DLL, injector, and VS Code MCP server are working together.
@@ -86,6 +116,7 @@ Expected result:
 Recommended checks:
 
 - `find_process_pid("TestTarget.exe")` returns the live PID before any PID-based debugger call.
+- `get_injection_setup()` returns the injector path, DLL path, PowerShell command template, and VS Code launcher path for the current layout.
 - `ping(pid)` returns the target PID, the pipe name `\\.\pipe\InternalDebuggerMCP_<pid>`, and a watch count.
 - `list_modules(pid)` includes `TestTarget.exe` and `InternalDebuggerDLL.dll`.
 - `pattern_scan(pid, "49 4E 54 45 52 4E 41 4C 5F 44 45 42 55 47 47 45 52 5F 4D 43 50 5F 50 41 54 54 45 52 4E")` finds the known marker string.

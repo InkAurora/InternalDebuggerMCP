@@ -1,0 +1,13 @@
+{
+  "servers": {
+    "internalDebugger": {
+      "type": "stdio",
+      "command": "python",
+      "args": ["C:/Path/To/InternalDebuggerMCP/mcp-server/launch.py"],
+      "env": {
+        "PYTHONUTF8": "1",
+        "PYTHONUNBUFFERED": "1"
+      }
+    }
+  }
+}
