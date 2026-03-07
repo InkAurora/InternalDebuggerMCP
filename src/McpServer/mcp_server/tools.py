@@ -17,7 +17,7 @@ def _split_records(records: list[str], expected_parts: int) -> list[list[str]]:
 
 
 def create_mcp(session_manager: SessionManager) -> FastMCP:
-    mcp = FastMCP("InternalDebuggerMCP")
+    mcp = FastMCP("InternalDebuggerMCP", log_level="WARNING")
 
     async def request(pid: int, command: str, **fields: Any) -> dict[str, list[str]]:
         response = await asyncio.to_thread(session_manager.get(pid).client.request, command, **fields)
@@ -27,7 +27,7 @@ def create_mcp(session_manager: SessionManager) -> FastMCP:
             raise RuntimeError(f"{code}: {detail}")
         return response.fields
 
-    @mcp.tool()
+    @mcp.tool(description="Check whether the injected debugger pipe for a target PID is reachable and report basic server state.")
     async def ping(pid: int) -> dict[str, Any]:
         fields = await request(pid, "ping")
         return {
@@ -36,7 +36,7 @@ def create_mcp(session_manager: SessionManager) -> FastMCP:
             "watch_count": int(fields["watch_count"][0]),
         }
 
-    @mcp.tool()
+    @mcp.tool(description="Read a raw byte range from the memory of the target process at the supplied address.")
     async def read_memory(pid: int, address: str, size: int) -> dict[str, Any]:
         fields = await request(pid, "read_memory", address=address, size=size)
         return {
@@ -45,7 +45,7 @@ def create_mcp(session_manager: SessionManager) -> FastMCP:
             "bytes": fields["bytes"][0],
         }
 
-    @mcp.tool()
+    @mcp.tool(description="Follow a pointer chain in the target process and return each dereference step.")
     async def dereference(pid: int, address: str, depth: int = 3, pointer_size: int = 8) -> dict[str, Any]:
         fields = await request(
             pid,
@@ -60,7 +60,7 @@ def create_mcp(session_manager: SessionManager) -> FastMCP:
             steps.append({"address": current, "value": value, "status": status})
         return {"start_address": fields["start_address"][0], "steps": steps}
 
-    @mcp.tool()
+    @mcp.tool(description="Enumerate loaded modules in the target process with base addresses, image sizes, and paths.")
     async def list_modules(pid: int) -> dict[str, Any]:
         fields = await request(pid, "list_modules")
         modules = []
@@ -71,7 +71,7 @@ def create_mcp(session_manager: SessionManager) -> FastMCP:
             modules.append({"name": name, "base": base, "size": int(size), "path": path})
         return {"module_count": int(fields["module_count"][0]), "modules": modules}
 
-    @mcp.tool()
+    @mcp.tool(description="Scan readable committed memory in the target process for a byte pattern with optional wildcards.")
     async def pattern_scan(
         pid: int,
         pattern: str,
@@ -90,7 +90,7 @@ def create_mcp(session_manager: SessionManager) -> FastMCP:
             "matches": fields.get("match", []),
         }
 
-    @mcp.tool()
+    @mcp.tool(description="Start polling a target address for changes and create a watch that can be queried for change events.")
     async def watch_address(
         pid: int,
         address: str,
@@ -112,12 +112,12 @@ def create_mcp(session_manager: SessionManager) -> FastMCP:
             "size": int(fields["size"][0]),
         }
 
-    @mcp.tool()
+    @mcp.tool(description="Remove an existing memory watch from the target process by watch identifier.")
     async def unwatch_address(pid: int, watch_id: str) -> dict[str, Any]:
         fields = await request(pid, "unwatch_address", watch_id=watch_id)
         return {"watch_id": fields["watch_id"][0], "removed": True}
 
-    @mcp.tool()
+    @mcp.tool(description="Fetch pending change events for active memory watches in the target process.")
     async def poll_watch_events(pid: int, limit: int = 16) -> dict[str, Any]:
         fields = await request(pid, "poll_watch_events", limit=limit)
         events = []
@@ -136,7 +136,7 @@ def create_mcp(session_manager: SessionManager) -> FastMCP:
             )
         return {"event_count": int(fields["event_count"][0]), "events": events}
 
-    @mcp.tool()
+    @mcp.tool(description="Disassemble a byte range from the target process into lightweight native instruction records.")
     async def disassemble(
         pid: int,
         address: str,
@@ -168,7 +168,7 @@ def create_mcp(session_manager: SessionManager) -> FastMCP:
             "instructions": instructions,
         }
 
-    @mcp.tool()
+    @mcp.tool(description="Capture the current thread register snapshot exposed by the injected debugger for the target process.")
     async def registers(pid: int) -> dict[str, Any]:
         fields = await request(pid, "registers")
         registers_data: dict[str, str] = {}

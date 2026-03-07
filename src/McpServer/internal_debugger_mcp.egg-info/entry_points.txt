@@ -1,0 +1,2 @@
+[console_scripts]
+internal-debugger-mcp = mcp_server.server:main
