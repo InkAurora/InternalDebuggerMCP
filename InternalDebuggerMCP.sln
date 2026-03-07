@@ -1,0 +1,33 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 18
+VisualStudioVersion = 18.0.11520.95
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "InternalDebuggerDLL", "src\DebuggerDLL\InternalDebuggerDLL.vcxproj", "{B0D73F1C-4C5A-4E7D-A5B7-8E6919187E10}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Injector", "tools\Injector\Injector.vcxproj", "{F94C8D6A-2E82-412E-B7A8-8A39C42C540A}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "TestTarget", "tools\TestTarget\TestTarget.vcxproj", "{C3D21D3D-16F8-4EE3-8940-4A5D777C5A6E}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|x64 = Debug|x64
+		Release|x64 = Release|x64
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{B0D73F1C-4C5A-4E7D-A5B7-8E6919187E10}.Debug|x64.ActiveCfg = Debug|x64
+		{B0D73F1C-4C5A-4E7D-A5B7-8E6919187E10}.Debug|x64.Build.0 = Debug|x64
+		{B0D73F1C-4C5A-4E7D-A5B7-8E6919187E10}.Release|x64.ActiveCfg = Release|x64
+		{B0D73F1C-4C5A-4E7D-A5B7-8E6919187E10}.Release|x64.Build.0 = Release|x64
+		{F94C8D6A-2E82-412E-B7A8-8A39C42C540A}.Debug|x64.ActiveCfg = Debug|x64
+		{F94C8D6A-2E82-412E-B7A8-8A39C42C540A}.Debug|x64.Build.0 = Debug|x64
+		{F94C8D6A-2E82-412E-B7A8-8A39C42C540A}.Release|x64.ActiveCfg = Release|x64
+		{F94C8D6A-2E82-412E-B7A8-8A39C42C540A}.Release|x64.Build.0 = Release|x64
+		{C3D21D3D-16F8-4EE3-8940-4A5D777C5A6E}.Debug|x64.ActiveCfg = Debug|x64
+		{C3D21D3D-16F8-4EE3-8940-4A5D777C5A6E}.Debug|x64.Build.0 = Debug|x64
+		{C3D21D3D-16F8-4EE3-8940-4A5D777C5A6E}.Release|x64.ActiveCfg = Release|x64
+		{C3D21D3D-16F8-4EE3-8940-4A5D777C5A6E}.Release|x64.Build.0 = Release|x64
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+EndGlobal

@@ -1,0 +1,7 @@
+C:\Users\INK\InternalDebuggerMCP\src\DebuggerDLL\src\DebuggerService.cpp;C:\Users\INK\InternalDebuggerMCP\artifacts\obj\InternalDebuggerDLL\Release\x64\DebuggerService.obj
+C:\Users\INK\InternalDebuggerMCP\src\DebuggerDLL\src\Disassembler.cpp;C:\Users\INK\InternalDebuggerMCP\artifacts\obj\InternalDebuggerDLL\Release\x64\Disassembler.obj
+C:\Users\INK\InternalDebuggerMCP\src\DebuggerDLL\src\dllmain.cpp;C:\Users\INK\InternalDebuggerMCP\artifacts\obj\InternalDebuggerDLL\Release\x64\dllmain.obj
+C:\Users\INK\InternalDebuggerMCP\src\DebuggerDLL\src\IpcServer.cpp;C:\Users\INK\InternalDebuggerMCP\artifacts\obj\InternalDebuggerDLL\Release\x64\IpcServer.obj
+C:\Users\INK\InternalDebuggerMCP\src\DebuggerDLL\src\MemoryReader.cpp;C:\Users\INK\InternalDebuggerMCP\artifacts\obj\InternalDebuggerDLL\Release\x64\MemoryReader.obj
+C:\Users\INK\InternalDebuggerMCP\src\DebuggerDLL\src\PatternScanner.cpp;C:\Users\INK\InternalDebuggerMCP\artifacts\obj\InternalDebuggerDLL\Release\x64\PatternScanner.obj
+C:\Users\INK\InternalDebuggerMCP\src\DebuggerDLL\src\WatchManager.cpp;C:\Users\INK\InternalDebuggerMCP\artifacts\obj\InternalDebuggerDLL\Release\x64\WatchManager.obj

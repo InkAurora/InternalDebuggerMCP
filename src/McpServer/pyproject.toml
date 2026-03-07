@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "internal-debugger-mcp"
+version = "0.1.0"
+description = "MCP server for the InternalDebugger injected DLL"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "mcp>=1.6.0",
+]
+
+[project.scripts]
+internal-debugger-mcp = "mcp_server.server:main"
+
+[tool.setuptools]
+package-dir = {"" = "."}
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["mcp_server*"]
