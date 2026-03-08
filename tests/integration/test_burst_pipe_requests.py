@@ -20,6 +20,32 @@ if str(MCP_SRC) not in sys.path:
 from mcp_server.pipe_client import NativeRequestError, PipeClient  # noqa: E402
 
 
+def _read_target_startup(process: subprocess.Popen[str]) -> dict[str, str]:
+    symbols: dict[str, str] = {}
+    deadline = time.time() + 10.0
+    while time.time() < deadline:
+        line = process.stdout.readline()
+        if not line:
+            if process.poll() is not None:
+                raise AssertionError("TestTarget exited before reporting startup addresses")
+            time.sleep(0.05)
+            continue
+
+        text = line.strip()
+        if text == "READY":
+            required = {"g_write_target", "SampleFunction"}
+            missing = required.difference(symbols)
+            if missing:
+                raise AssertionError(f"Missing startup symbols: {', '.join(sorted(missing))}")
+            return symbols
+
+        if ": 0x" in text:
+            label, value = text.split(": 0x", 1)
+            symbols[label.strip()] = f"0x{value.strip()}"
+
+    raise AssertionError("Timed out waiting for TestTarget startup banner")
+
+
 class BurstPipeRequestsTest(unittest.TestCase):
     marker_pattern = "49 4E 54 45 52 4E 41 4C 5F 44 45 42 55 47 47 45 52 5F 4D 43 50 5F 50 41 54 54 45 52 4E"
     function_pattern = "55 48 89 E5 90 C3"
@@ -37,10 +63,14 @@ class BurstPipeRequestsTest(unittest.TestCase):
         cls.target_process = subprocess.Popen(
             [str(cls.target_path)],
             cwd=REPO_ROOT,
-            stdout=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
+            text=True,
+            bufsize=1,
         )
         cls.target_pid = cls.target_process.pid
+        assert cls.target_process.stdout is not None
+        cls.target_symbols = _read_target_startup(cls.target_process)
 
         subprocess.run(
             [str(cls.injector_path), str(cls.target_pid), str(cls.dll_path.resolve())],
@@ -74,6 +104,8 @@ class BurstPipeRequestsTest(unittest.TestCase):
             except subprocess.TimeoutExpired:
                 cls.target_process.kill()
                 cls.target_process.wait(timeout=5)
+        if hasattr(cls, "target_process") and cls.target_process.stdout is not None:
+            cls.target_process.stdout.close()
 
     @classmethod
     def _wait_for_pipe(cls) -> None:
@@ -94,6 +126,8 @@ class BurstPipeRequestsTest(unittest.TestCase):
             ("pattern_scan", {"pattern": self.marker_pattern, "limit": 1}),
             ("read_memory", {"address": self.marker_address, "size": 29}),
             ("disassemble", {"address": self.function_address, "size": 6, "max_instructions": 6}),
+            ("list_modules", {}),
+            ("pattern_scan", {"pattern": self.marker_pattern, "limit": 1}),
             ("ping", {}),
         ]
 
@@ -113,7 +147,9 @@ class BurstPipeRequestsTest(unittest.TestCase):
         self.assertEqual(results[2]["match_count"][0], "1")
         self.assertEqual(results[3]["bytes"][0], self.marker_pattern)
         self.assertEqual(results[4]["instruction_count"][0], "4")
-        self.assertEqual(results[5]["status"][0], "ok")
+        self.assertTrue(any(module.startswith("TestTarget.exe|") for module in results[5].get("module", [])))
+        self.assertEqual(results[6]["match_count"][0], "1")
+        self.assertEqual(results[7]["status"][0], "ok")
 
 
 if __name__ == "__main__":

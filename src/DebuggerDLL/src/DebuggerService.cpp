@@ -1,17 +1,35 @@
 #include "DebuggerService.h"
 
 #include <Windows.h>
-#include <Psapi.h>
+#include <TlHelp32.h>
 
+#include <algorithm>
+#include <array>
 #include <chrono>
+#include <cstring>
 #include <format>
+#include <optional>
 #include <sstream>
+#include <string_view>
 
 #include "DebuggerProtocol.h"
 
 namespace idmcp {
 
 namespace {
+
+struct ModuleRecord {
+    std::string name;
+    std::uintptr_t baseAddress;
+    std::uint32_t imageSize;
+    std::string path;
+};
+
+struct InvokeArgumentState {
+    std::uint64_t value{0};
+    std::vector<std::uint8_t> storage;
+    std::optional<std::pair<std::size_t, std::string>> output;
+};
 
 [[nodiscard]] std::string Join(const std::vector<std::string>& items, const std::string_view separator) {
     std::ostringstream stream;
@@ -28,6 +46,287 @@ namespace {
     return bytes.empty() ? std::string{} : HexEncode(bytes);
 }
 
+[[nodiscard]] std::string WideToUtf8(const wchar_t* text) {
+    if (text == nullptr || *text == L'\0') {
+        return {};
+    }
+
+    const int required = WideCharToMultiByte(CP_UTF8, 0, text, -1, nullptr, 0, nullptr, nullptr);
+    if (required <= 1) {
+        return {};
+    }
+
+    std::string converted(static_cast<std::size_t>(required - 1), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, text, -1, converted.data(), required, nullptr, nullptr);
+    return converted;
+}
+
+[[nodiscard]] std::string DescribeWin32Error(const DWORD error) {
+    if (error == ERROR_SUCCESS) {
+        return "success";
+    }
+
+    LPSTR buffer = nullptr;
+    const DWORD flags = FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS;
+    const DWORD length = FormatMessageA(
+        flags,
+        nullptr,
+        error,
+        MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+        reinterpret_cast<LPSTR>(&buffer),
+        0,
+        nullptr);
+    if (length == 0 || buffer == nullptr) {
+        return std::format("Win32 error {}", error);
+    }
+
+    std::string message(buffer, buffer + length);
+    LocalFree(buffer);
+    while (!message.empty() && (message.back() == '\r' || message.back() == '\n' || message.back() == ' ' || message.back() == '.')) {
+        message.pop_back();
+    }
+    return message;
+}
+
+[[nodiscard]] std::string BaseName(std::string_view path) {
+    const auto lastSlash = path.find_last_of("\\/");
+    if (lastSlash == std::string_view::npos) {
+        return std::string(path);
+    }
+    return std::string(path.substr(lastSlash + 1));
+}
+
+[[nodiscard]] bool EqualsIgnoreCase(std::string_view left, std::string_view right) {
+    if (left.size() != right.size()) {
+        return false;
+    }
+
+    for (std::size_t index = 0; index < left.size(); ++index) {
+        if (std::tolower(static_cast<unsigned char>(left[index])) !=
+            std::tolower(static_cast<unsigned char>(right[index]))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+[[nodiscard]] std::vector<ModuleRecord> SnapshotModules() {
+    std::vector<ModuleRecord> modules;
+
+    const HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, GetCurrentProcessId());
+    if (snapshot == INVALID_HANDLE_VALUE) {
+        return modules;
+    }
+
+    MODULEENTRY32W entry{};
+    entry.dwSize = sizeof(entry);
+    if (!Module32FirstW(snapshot, &entry)) {
+        CloseHandle(snapshot);
+        return modules;
+    }
+
+    do {
+        modules.push_back(ModuleRecord{
+            .name = WideToUtf8(entry.szModule),
+            .baseAddress = reinterpret_cast<std::uintptr_t>(entry.modBaseAddr),
+            .imageSize = entry.modBaseSize,
+            .path = WideToUtf8(entry.szExePath),
+        });
+    } while (Module32NextW(snapshot, &entry));
+
+    CloseHandle(snapshot);
+    return modules;
+}
+
+[[nodiscard]] std::optional<ModuleRecord> FindModuleByName(std::string_view requestedName) {
+    const auto modules = SnapshotModules();
+    for (const auto& module : modules) {
+        if (EqualsIgnoreCase(module.name, requestedName) ||
+            EqualsIgnoreCase(module.path, requestedName) ||
+            EqualsIgnoreCase(BaseName(module.path), requestedName)) {
+            return module;
+        }
+    }
+    return std::nullopt;
+}
+
+[[nodiscard]] bool ParseInvokeAddress(
+    const ParsedMessage& message,
+    std::uintptr_t& address,
+    std::string& errorDetail) {
+    const auto addressText = message.GetFirst("address");
+    const auto moduleName = message.GetFirst("module");
+    const auto exportName = message.GetFirst("export");
+
+    if (addressText.has_value()) {
+        const auto parsed = ParseAddress(*addressText);
+        if (!parsed.has_value()) {
+            errorDetail = "address must be a valid hexadecimal pointer";
+            return false;
+        }
+        address = *parsed;
+        return true;
+    }
+
+    if (!moduleName.has_value() || !exportName.has_value()) {
+        errorDetail = "either address or module plus export are required";
+        return false;
+    }
+
+    const auto module = FindModuleByName(*moduleName);
+    if (!module.has_value()) {
+        errorDetail = std::format("module not loaded: {}", *moduleName);
+        return false;
+    }
+
+    const FARPROC procedure = GetProcAddress(reinterpret_cast<HMODULE>(module->baseAddress), exportName->c_str());
+    if (procedure == nullptr) {
+        errorDetail = std::format("export not found: {}!{}", module->name, *exportName);
+        return false;
+    }
+
+    address = reinterpret_cast<std::uintptr_t>(procedure);
+    return true;
+}
+
+[[nodiscard]] bool ParseInvokeArguments(
+    const ParsedMessage& message,
+    std::vector<InvokeArgumentState>& arguments,
+    std::string& errorDetail) {
+    const auto argCount = ParseUnsigned(message.GetFirst("arg_count").value_or("0"));
+    if (!argCount.has_value()) {
+        errorDetail = "arg_count must be an unsigned integer";
+        return false;
+    }
+    if (*argCount > kMaxInvokeArguments) {
+        errorDetail = std::format("arg_count exceeds maximum of {}", kMaxInvokeArguments);
+        return false;
+    }
+
+    arguments.clear();
+    arguments.reserve(static_cast<std::size_t>(*argCount));
+    for (std::size_t index = 0; index < *argCount; ++index) {
+        const auto kindKey = std::format("arg{}_kind", index);
+        const auto valueKey = std::format("arg{}_value", index);
+        const auto sizeKey = std::format("arg{}_size", index);
+        const auto kind = message.GetFirst(kindKey);
+        if (!kind.has_value()) {
+            errorDetail = std::format("{} is required", kindKey);
+            return false;
+        }
+
+        InvokeArgumentState state;
+        if (*kind == "u64") {
+            const auto parsed = ParseUnsigned(message.GetFirst(valueKey).value_or(""));
+            if (!parsed.has_value()) {
+                errorDetail = std::format("{} must be an unsigned integer", valueKey);
+                return false;
+            }
+            state.value = *parsed;
+        } else if (*kind == "pointer") {
+            const auto parsed = ParseAddress(message.GetFirst(valueKey).value_or(""));
+            if (!parsed.has_value()) {
+                errorDetail = std::format("{} must be a hexadecimal pointer", valueKey);
+                return false;
+            }
+            state.value = static_cast<std::uint64_t>(*parsed);
+        } else if (*kind == "bytes" || *kind == "utf8" || *kind == "utf16" || *kind == "inout_buffer") {
+            if (!ParseHexBytes(message.GetFirst(valueKey).value_or(""), state.storage)) {
+                errorDetail = std::format("{} must contain space-separated hex bytes", valueKey);
+                return false;
+            }
+            if (state.storage.size() > kMaxInvokeBufferSize) {
+                errorDetail = std::format("{} exceeds maximum buffer size", valueKey);
+                return false;
+            }
+
+            state.value = reinterpret_cast<std::uint64_t>(state.storage.data());
+            if (*kind == "inout_buffer") {
+                state.output = std::make_pair(index, *kind);
+            }
+            arguments.push_back(std::move(state));
+            continue;
+        } else if (*kind == "out_buffer") {
+            const auto parsedSize = ParseUnsigned(message.GetFirst(sizeKey).value_or(""));
+            if (!parsedSize.has_value() || *parsedSize == 0 || *parsedSize > kMaxInvokeBufferSize) {
+                errorDetail = std::format("{} must be between 1 and {}", sizeKey, kMaxInvokeBufferSize);
+                return false;
+            }
+
+            state.storage = std::vector<std::uint8_t>(static_cast<std::size_t>(*parsedSize), 0);
+            state.value = reinterpret_cast<std::uint64_t>(state.storage.data());
+            state.output = std::make_pair(index, *kind);
+        } else {
+            errorDetail = std::format("unsupported argument kind: {}", *kind);
+            return false;
+        }
+
+        arguments.push_back(std::move(state));
+    }
+
+    return true;
+}
+
+[[nodiscard]] bool InvokeFunction(
+    const std::uintptr_t address,
+    const std::vector<InvokeArgumentState>& arguments,
+    std::uint64_t& returnValue,
+    DWORD& lastError,
+    DWORD& exceptionCode) {
+    returnValue = 0;
+    lastError = 0;
+    exceptionCode = 0;
+
+    SetLastError(ERROR_SUCCESS);
+    __try {
+        switch (arguments.size()) {
+        case 0: {
+            using Fn = std::uint64_t(*)();
+            returnValue = reinterpret_cast<Fn>(address)();
+            break;
+        }
+        case 1: {
+            using Fn = std::uint64_t(*)(std::uint64_t);
+            returnValue = reinterpret_cast<Fn>(address)(arguments[0].value);
+            break;
+        }
+        case 2: {
+            using Fn = std::uint64_t(*)(std::uint64_t, std::uint64_t);
+            returnValue = reinterpret_cast<Fn>(address)(arguments[0].value, arguments[1].value);
+            break;
+        }
+        case 3: {
+            using Fn = std::uint64_t(*)(std::uint64_t, std::uint64_t, std::uint64_t);
+            returnValue = reinterpret_cast<Fn>(address)(arguments[0].value, arguments[1].value, arguments[2].value);
+            break;
+        }
+        case 4: {
+            using Fn = std::uint64_t(*)(std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t);
+            returnValue = reinterpret_cast<Fn>(address)(arguments[0].value, arguments[1].value, arguments[2].value, arguments[3].value);
+            break;
+        }
+        case 5: {
+            using Fn = std::uint64_t(*)(std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t);
+            returnValue = reinterpret_cast<Fn>(address)(arguments[0].value, arguments[1].value, arguments[2].value, arguments[3].value, arguments[4].value);
+            break;
+        }
+        case 6: {
+            using Fn = std::uint64_t(*)(std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t);
+            returnValue = reinterpret_cast<Fn>(address)(arguments[0].value, arguments[1].value, arguments[2].value, arguments[3].value, arguments[4].value, arguments[5].value);
+            break;
+        }
+        default:
+            return false;
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        exceptionCode = GetExceptionCode();
+        return false;
+    }
+
+    lastError = GetLastError();
+    return true;
+}
+
 }  // namespace
 
 DebuggerService& DebuggerService::Instance() {
@@ -38,20 +337,29 @@ DebuggerService& DebuggerService::Instance() {
 DebuggerService::DebuggerService()
     : patternScanner_(memoryReader_), watchManager_(memoryReader_) {}
 
-DebuggerService::~DebuggerService() {
-    Stop();
-}
+DebuggerService::~DebuggerService() = default;
 
 void DebuggerService::Start(HMODULE moduleHandle) {
     moduleHandle_ = moduleHandle;
     if (bootstrapThread_ != nullptr || bootstrapped_.load()) {
         return;
     }
+    stopCompleted_.store(false);
+    stopInProgress_.store(false);
     stopRequested_.store(false);
+    unloadRequested_.store(false);
     bootstrapThread_ = CreateThread(nullptr, 0, &DebuggerService::BootstrapThreadProc, this, 0, nullptr);
 }
 
 void DebuggerService::Stop() {
+    if (stopCompleted_.load()) {
+        return;
+    }
+
+    if (stopInProgress_.exchange(true)) {
+        return;
+    }
+
     stopRequested_.store(true);
 
     if (ipcServer_) {
@@ -67,10 +375,43 @@ void DebuggerService::Stop() {
     }
 
     bootstrapped_.store(false);
+    stopCompleted_.store(true);
+}
+
+void DebuggerService::OnProcessDetach() {
+    stopRequested_.store(true);
+    bootstrapped_.store(false);
+    moduleHandle_ = nullptr;
+}
+
+bool DebuggerService::RequestUnload() {
+    if (moduleHandle_ == nullptr) {
+        SetLastError(ERROR_INVALID_HANDLE);
+        return false;
+    }
+
+    if (unloadRequested_.exchange(true)) {
+        SetLastError(ERROR_ALREADY_EXISTS);
+        return false;
+    }
+
+    const HANDLE unloadThread = CreateThread(nullptr, 0, &DebuggerService::UnloadThreadProc, this, 0, nullptr);
+    if (unloadThread == nullptr) {
+        unloadRequested_.store(false);
+        return false;
+    }
+
+    CloseHandle(unloadThread);
+    return true;
 }
 
 DWORD WINAPI DebuggerService::BootstrapThreadProc(LPVOID context) {
     static_cast<DebuggerService*>(context)->Bootstrap();
+    return 0;
+}
+
+DWORD WINAPI DebuggerService::UnloadThreadProc(LPVOID context) {
+    static_cast<DebuggerService*>(context)->RunExplicitUnload();
     return 0;
 }
 
@@ -88,6 +429,14 @@ void DebuggerService::Bootstrap() {
     }
 }
 
+void DebuggerService::RunExplicitUnload() {
+    const HMODULE moduleHandle = moduleHandle_;
+    Stop();
+    if (moduleHandle != nullptr) {
+        FreeLibraryAndExitThread(moduleHandle, ERROR_SUCCESS);
+    }
+}
+
 std::string DebuggerService::Dispatch(const std::string& request) {
     const auto message = ParseMessage(request);
     const auto command = message.GetFirst("command");
@@ -98,8 +447,14 @@ std::string DebuggerService::Dispatch(const std::string& request) {
     if (*command == "ping") {
         return HandlePing();
     }
+    if (*command == "eject") {
+        return HandleEject();
+    }
     if (*command == "read_memory") {
         return HandleReadMemory(message);
+    }
+    if (*command == "write_memory") {
+        return HandleWriteMemory(message);
     }
     if (*command == "dereference") {
         return HandleDereference(message);
@@ -122,6 +477,9 @@ std::string DebuggerService::Dispatch(const std::string& request) {
     if (*command == "disassemble") {
         return HandleDisassemble(message);
     }
+    if (*command == "invoke_function") {
+        return HandleInvokeFunction(message);
+    }
     if (*command == "registers") {
         return HandleRegisters();
     }
@@ -135,6 +493,25 @@ std::string DebuggerService::HandlePing() const {
         {"pipe_name", pipeName_},
         {"watch_count", std::to_string(watchManager_.WatchCount())},
     });
+}
+
+std::string DebuggerService::HandleEject() {
+    if (RequestUnload()) {
+        return MakeOk({
+            {"eject_status", "scheduled"},
+        });
+    }
+
+    const DWORD error = GetLastError();
+    if (error == ERROR_ALREADY_EXISTS) {
+        return MakeOk({
+            {"eject_status", "already_requested"},
+        });
+    }
+
+    return MakeError(
+        "eject_failed",
+        std::format("unable to schedule unload: {}", DescribeWin32Error(error)));
 }
 
 std::string DebuggerService::HandleReadMemory(const ParsedMessage& message) const {
@@ -157,6 +534,42 @@ std::string DebuggerService::HandleReadMemory(const ParsedMessage& message) cons
         {"size", std::to_string(*size)},
         {"bytes", HexEncode(bytes)},
     });
+}
+
+std::string DebuggerService::HandleWriteMemory(const ParsedMessage& message) const {
+    const auto address = ParseAddress(message.GetFirst("address").value_or(""));
+    if (!address.has_value()) {
+        return MakeError("invalid_arguments", "address is required");
+    }
+
+    std::vector<std::uint8_t> bytes;
+    if (!ParseHexBytes(message.GetFirst("bytes").value_or(""), bytes)) {
+        return MakeError("invalid_arguments", "bytes must be space-separated hex byte values");
+    }
+    if (bytes.size() > kMaxWriteSize) {
+        return MakeError("invalid_size", "byte payload exceeds maximum write limit");
+    }
+
+    if (!memoryReader_.WriteBytes(*address, bytes)) {
+        return MakeError("memory_write_failed", "unable to write requested range");
+    }
+
+    std::vector<MessageField> fields{
+        {"address", ToHex(*address)},
+        {"requested_size", std::to_string(bytes.size())},
+        {"bytes_written", std::to_string(bytes.size())},
+        {"bytes", HexEncode(bytes)},
+    };
+
+    if (ParseBool(message.GetFirst("read_back").value_or("false")).value_or(false)) {
+        std::vector<std::uint8_t> readBack;
+        if (!memoryReader_.ReadBytes(*address, bytes.size(), readBack)) {
+            return MakeError("memory_verify_failed", "memory write succeeded but read-back verification failed");
+        }
+        fields.emplace_back("read_back", HexEncode(readBack));
+    }
+
+    return MakeOk(std::move(fields));
 }
 
 std::string DebuggerService::HandleDereference(const ParsedMessage& message) const {
@@ -185,35 +598,24 @@ std::string DebuggerService::HandleDereference(const ParsedMessage& message) con
 }
 
 std::string DebuggerService::HandleListModules() const {
-    HMODULE modules[1024]{};
-    DWORD bytesNeeded = 0;
-    if (!EnumProcessModules(GetCurrentProcess(), modules, sizeof(modules), &bytesNeeded)) {
-        return MakeError("module_enum_failed", "EnumProcessModules failed");
+    const auto modules = SnapshotModules();
+    if (modules.empty()) {
+        return MakeError("module_enum_failed", "unable to snapshot loaded modules");
     }
 
-    const auto count = bytesNeeded / sizeof(HMODULE);
-    std::vector<MessageField> fields{{"module_count", std::to_string(count)}};
-    for (DWORD index = 0; index < count; ++index) {
-        MODULEINFO moduleInfo{};
-        char modulePath[MAX_PATH]{};
-        if (!GetModuleInformation(GetCurrentProcess(), modules[index], &moduleInfo, sizeof(moduleInfo))) {
-            continue;
-        }
-        GetModuleFileNameExA(GetCurrentProcess(), modules[index], modulePath, MAX_PATH);
-        std::string moduleName = modulePath;
-        const auto lastSlash = moduleName.find_last_of("\\/");
-        if (lastSlash != std::string::npos) {
-            moduleName = moduleName.substr(lastSlash + 1);
-        }
-
+    std::vector<MessageField> fields{
+        {"module_count", std::to_string(modules.size())},
+        {"enumeration_method", "toolhelp_snapshot"},
+    };
+    for (const auto& module : modules) {
         fields.emplace_back(
             "module",
             std::format(
                 "{}|{}|{}|{}",
-                moduleName,
-                ToHex(reinterpret_cast<std::uintptr_t>(moduleInfo.lpBaseOfDll)),
-                moduleInfo.SizeOfImage,
-                modulePath));
+                module.name,
+                ToHex(module.baseAddress),
+                module.imageSize,
+                module.path));
     }
     return MakeOk(std::move(fields));
 }
@@ -331,6 +733,52 @@ std::string DebuggerService::HandleDisassemble(const ParsedMessage& message) con
                 instruction.mnemonic,
                 instruction.operands));
     }
+    return MakeOk(std::move(fields));
+}
+
+std::string DebuggerService::HandleInvokeFunction(const ParsedMessage& message) const {
+    std::uintptr_t address = 0;
+    std::string errorDetail;
+    if (!ParseInvokeAddress(message, address, errorDetail)) {
+        return MakeError("invalid_arguments", errorDetail);
+    }
+
+    std::vector<InvokeArgumentState> arguments;
+    if (!ParseInvokeArguments(message, arguments, errorDetail)) {
+        return MakeError("invalid_arguments", errorDetail);
+    }
+
+    std::uint64_t returnValue = 0;
+    DWORD lastError = 0;
+    DWORD exceptionCode = 0;
+    if (!InvokeFunction(address, arguments, returnValue, lastError, exceptionCode)) {
+        if (exceptionCode != 0) {
+            return MakeError("invoke_exception", std::format("function raised exception 0x{:08X}", exceptionCode));
+        }
+        return MakeError("invoke_failed", "function invocation failed");
+    }
+
+    std::vector<MessageField> fields{
+        {"resolved_address", ToHex(address)},
+        {"return_value", std::to_string(returnValue)},
+        {"last_error", std::to_string(lastError)},
+    };
+
+    for (const auto& argument : arguments) {
+        if (!argument.output.has_value()) {
+            continue;
+        }
+        fields.emplace_back(
+            "output",
+            std::format(
+                "{}|{}|{}|{}|{}",
+                argument.output->first,
+                argument.output->second,
+                ToHex(static_cast<std::uintptr_t>(argument.value)),
+                argument.storage.size(),
+                HexEncode(argument.storage)));
+    }
+
     return MakeOk(std::move(fields));
 }
 

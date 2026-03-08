@@ -24,6 +24,15 @@ class InjectionResult:
     injected: bool
 
 
+@dataclass(frozen=True, slots=True)
+class EjectionResult:
+    pid: int
+    dll_path: str
+    method: str
+    status: str
+    detail: str
+
+
 class InjectionError(RuntimeError):
     def __init__(self, code: str, detail: str) -> None:
         super().__init__(f"{code}: {detail}")
@@ -31,14 +40,14 @@ class InjectionError(RuntimeError):
         self.detail = detail
 
 
-def resolve_injection_paths(dll_path: str | Path | None = None) -> InjectionPaths:
+def resolve_injection_paths(dll_path: str | Path | None = None, *, require_dll_exists: bool = True) -> InjectionPaths:
     layout = resolve_runtime_layout()
     injector_path = layout.injector_path.resolve()
     resolved_dll_path = Path(dll_path).expanduser().resolve() if dll_path is not None else layout.dll_path.resolve()
 
     if not injector_path.exists():
         raise InjectionError("missing_injector", f"Injector executable not found: {injector_path}")
-    if not resolved_dll_path.exists():
+    if require_dll_exists and not resolved_dll_path.exists():
         raise InjectionError("missing_dll", f"Debugger DLL not found: {resolved_dll_path}")
 
     return InjectionPaths(injector_path=injector_path, dll_path=resolved_dll_path)
@@ -105,3 +114,76 @@ def inject_debugger(
         dll_path=str(paths.dll_path),
         injected=True,
     )
+
+
+def request_debugger_eject(pid: int, *, timeout_ms: int = 2000) -> str:
+    response = PipeClient(pid, timeout_ms=timeout_ms).request("eject")
+    response.raise_for_error(default_detail="native eject request failed")
+    return response.one("eject_status", "scheduled") or "scheduled"
+
+
+def force_eject_debugger(
+    pid: int,
+    dll_path: str | Path | None = None,
+    *,
+    injector_timeout_s: int = 15,
+) -> EjectionResult:
+    paths = resolve_injection_paths(dll_path, require_dll_exists=False)
+    completed = subprocess.run(
+        [str(paths.injector_path), "--eject", str(pid), str(paths.dll_path)],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=injector_timeout_s,
+    )
+
+    detail = completed.stderr.strip() or completed.stdout.strip()
+    if completed.returncode == 0:
+        return EjectionResult(
+            pid=pid,
+            dll_path=str(paths.dll_path),
+            method="injector",
+            status="ejected",
+            detail=detail or "Debugger DLL ejected",
+        )
+    if completed.returncode == 3:
+        return EjectionResult(
+            pid=pid,
+            dll_path=str(paths.dll_path),
+            method="injector",
+            status="already_absent",
+            detail=detail or "Debugger DLL was not loaded",
+        )
+
+    raise InjectionError(
+        "ejector_failed",
+        detail or f"Injector.exe --eject exited with code {completed.returncode}",
+    )
+
+
+def eject_debugger(
+    pid: int,
+    dll_path: str | Path | None = None,
+    *,
+    pipe_timeout_ms: int = 2000,
+    injector_timeout_s: int = 15,
+) -> EjectionResult:
+    paths = resolve_injection_paths(dll_path, require_dll_exists=False)
+
+    pipe_status: str | None = None
+    try:
+        pipe_status = request_debugger_eject(pid, timeout_ms=pipe_timeout_ms)
+    except (NativeRequestError, OSError):
+        pipe_status = None
+
+    injector_result = force_eject_debugger(pid, dll_path=paths.dll_path, injector_timeout_s=injector_timeout_s)
+    if pipe_status is not None and injector_result.status in {"ejected", "already_absent"}:
+        return EjectionResult(
+            pid=pid,
+            dll_path=str(paths.dll_path),
+            method="pipe",
+            status="ejected",
+            detail=pipe_status,
+        )
+
+    return injector_result

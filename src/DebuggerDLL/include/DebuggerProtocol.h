@@ -14,9 +14,12 @@
 namespace idmcp {
 
 inline constexpr std::size_t kMaxReadSize = 64 * 1024;
+inline constexpr std::size_t kMaxWriteSize = 64 * 1024;
 inline constexpr std::size_t kMaxPatternResults = 256;
 inline constexpr std::size_t kMaxWatchCount = 64;
 inline constexpr std::size_t kDefaultPollLimit = 16;
+inline constexpr std::size_t kMaxInvokeArguments = 6;
+inline constexpr std::size_t kMaxInvokeBufferSize = 64 * 1024;
 inline constexpr char kFrameDelimiter[] = "\n\n";
 inline constexpr char kPipePrefix[] = "\\\\.\\pipe\\InternalDebuggerMCP_";
 
@@ -132,6 +135,46 @@ inline std::optional<std::uint64_t> ParseUnsigned(std::string_view text) {
         return std::nullopt;
     }
     return parsed;
+}
+
+inline std::optional<bool> ParseBool(std::string_view text) {
+    const auto value = Trim(std::string(text));
+    if (value.empty()) {
+        return std::nullopt;
+    }
+
+    if (value == "1" || value == "true" || value == "TRUE" || value == "yes" || value == "YES") {
+        return true;
+    }
+    if (value == "0" || value == "false" || value == "FALSE" || value == "no" || value == "NO") {
+        return false;
+    }
+    return std::nullopt;
+}
+
+inline bool ParseHexBytes(std::string_view text, std::vector<std::uint8_t>& output) {
+    output.clear();
+
+    std::istringstream stream{std::string(text)};
+    std::string token;
+    while (stream >> token) {
+        if (token.size() != 2) {
+            output.clear();
+            return false;
+        }
+
+        unsigned int value = 0;
+        std::istringstream tokenStream{token};
+        tokenStream >> std::hex >> value;
+        if (tokenStream.fail() || value > 0xFFU) {
+            output.clear();
+            return false;
+        }
+
+        output.push_back(static_cast<std::uint8_t>(value));
+    }
+
+    return !output.empty();
 }
 
 }  // namespace idmcp

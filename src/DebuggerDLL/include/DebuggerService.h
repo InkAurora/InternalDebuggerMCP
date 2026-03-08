@@ -3,8 +3,10 @@
 #include <Windows.h>
 
 #include <atomic>
+#include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "DebuggerProtocol.h"
 #include "Disassembler.h"
@@ -21,6 +23,8 @@ public:
 
     void Start(HMODULE moduleHandle);
     void Stop();
+    void OnProcessDetach();
+    [[nodiscard]] bool RequestUnload();
     [[nodiscard]] std::string Dispatch(const std::string& request);
 
 private:
@@ -28,9 +32,13 @@ private:
     ~DebuggerService();
 
     static DWORD WINAPI BootstrapThreadProc(LPVOID context);
+    static DWORD WINAPI UnloadThreadProc(LPVOID context);
     void Bootstrap();
+    void RunExplicitUnload();
     [[nodiscard]] std::string HandlePing() const;
+    [[nodiscard]] std::string HandleEject();
     [[nodiscard]] std::string HandleReadMemory(const ParsedMessage& message) const;
+    [[nodiscard]] std::string HandleWriteMemory(const ParsedMessage& message) const;
     [[nodiscard]] std::string HandleDereference(const ParsedMessage& message) const;
     [[nodiscard]] std::string HandleListModules() const;
     [[nodiscard]] std::string HandlePatternScan(const ParsedMessage& message) const;
@@ -38,6 +46,7 @@ private:
     [[nodiscard]] std::string HandleUnwatchAddress(const ParsedMessage& message);
     [[nodiscard]] std::string HandlePollWatchEvents(const ParsedMessage& message);
     [[nodiscard]] std::string HandleDisassemble(const ParsedMessage& message) const;
+    [[nodiscard]] std::string HandleInvokeFunction(const ParsedMessage& message) const;
     [[nodiscard]] std::string HandleRegisters() const;
 
     [[nodiscard]] static std::string MakeError(const std::string& code, const std::string& detail);
@@ -47,6 +56,9 @@ private:
     HMODULE moduleHandle_{nullptr};
     std::atomic<bool> bootstrapped_{false};
     std::atomic<bool> stopRequested_{false};
+    std::atomic<bool> stopInProgress_{false};
+    std::atomic<bool> stopCompleted_{false};
+    std::atomic<bool> unloadRequested_{false};
     HANDLE bootstrapThread_{nullptr};
     std::string pipeName_;
     MemoryReader memoryReader_;

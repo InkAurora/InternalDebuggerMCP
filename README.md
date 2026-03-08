@@ -5,14 +5,16 @@ InternalDebuggerMCP is a Windows-first debugging bridge built around two compone
 - an injected x64 C++ DLL that exposes in-process inspection capabilities over a named pipe;
 - a Python MCP server that translates MCP tool calls into pipe requests and injects the DLL on demand for PID-based requests.
 
-The current implementation focuses on a safe read-oriented MVP:
+The current implementation focuses on a constrained in-process debugging surface:
 
 - memory reads;
+- guarded memory writes;
 - pointer-chain dereferencing;
 - committed-memory pattern scanning;
 - module enumeration;
 - polling-based address watching;
-- lightweight native disassembly.
+- Capstone-backed MCP disassembly;
+- direct in-process function invocation with bounded argument marshaling.
 
 ## Repository layout
 
@@ -27,7 +29,7 @@ The current implementation focuses on a safe read-oriented MVP:
 The native components target Windows x64 and can now be built directly with Visual Studio Build Tools 2026 through MSBuild.
 
 ```powershell
-& "C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\MSBuild\Current\Bin\MSBuild.exe" ".\InternalDebuggerMCP.sln" /m "/p:Configuration=Release;Platform=x64"
+& "C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\MSBuild\Current\Bin\MSBuild.exe" ".\InternalDebuggerMCP.sln" /m '/p:Configuration=Release;Platform=x64'
 ```
 
 The repository still includes CMake files if you prefer that route.
@@ -78,7 +80,7 @@ Use this workflow to verify that the native DLL, injector, and VS Code MCP serve
 1. Build the solution.
 
 ```powershell
-& "C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\MSBuild\Current\Bin\MSBuild.exe" ".\InternalDebuggerMCP.sln" /m "/p:Configuration=Release;Platform=x64"
+& "C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\MSBuild\Current\Bin\MSBuild.exe" ".\InternalDebuggerMCP.sln" /m '/p:Configuration=Release;Platform=x64'
 ```
 
 2. Start the deterministic target process.
@@ -90,7 +92,7 @@ Use this workflow to verify that the native DLL, injector, and VS Code MCP serve
 Expected result:
 
 - the console prints the PID;
-- the console prints addresses for `g_counter`, `g_pattern`, `g_bytes`, `g_head`, and `SampleFunction`;
+- the console prints addresses for `g_counter`, `g_write_target`, `g_pattern`, `g_bytes`, `g_head`, `SampleFunction`, and the exported test helpers;
 - `g_counter` changes every second.
 
 3. Ensure the workspace MCP server is running in VS Code.
@@ -106,10 +108,12 @@ Expected result:
 
 - `find_process_pid("TestTarget.exe")` returns the live PID before any PID-based debugger call.
 - `ping(pid)` returns the target PID, the pipe name `\\.\pipe\InternalDebuggerMCP_<pid>`, and a watch count. This first PID-based call should auto-inject when needed.
-- `list_modules(pid)` includes `TestTarget.exe` and `InternalDebuggerDLL.dll`.
+- `list_modules(pid)` includes `TestTarget.exe` and `InternalDebuggerDLL.dll`, and reports `toolhelp_snapshot` as the enumeration method.
 - `pattern_scan(pid, "49 4E 54 45 52 4E 41 4C 5F 44 45 42 55 47 47 45 52 5F 4D 43 50 5F 50 41 54 54 45 52 4E")` finds the known marker string.
 - `read_memory(pid, <match_address>, 29)` returns the bytes for `INTERNAL_DEBUGGER_MCP_PATTERN`.
-- `disassemble(pid, <g_bytes_or_function_address>, 6)` returns `push rbp`, `mov rbp, rsp`, `nop`, and `ret` for the test bytes.
+- `write_memory(pid, <g_write_target_address>, bytes_hex="AA BB CC DD EE FF 00 11")` succeeds and returns the verified read-back bytes.
+- `disassemble(pid, <g_bytes_or_function_address>, 6)` returns `push rbp`, `mov rbp, rsp`, `nop`, and `ret` for the test bytes using the MCP server's Capstone-backed path.
+- `invoke_function(pid, module="TestTarget.exe", export="ExportedFillBuffer", args=[...])` returns the function result and any output buffers.
 - `watch_address(pid, <g_counter_address>, 4)` followed by `poll_watch_events(pid)` shows changes while the target runs.
 - `get_injection_setup()` still returns the injector path, DLL path, and manual fallback commands for troubleshooting or packaging diagnostics.
 
@@ -128,6 +132,8 @@ Run the Windows burst-request regression test after building the solution.
 - Use the addresses printed by `TestTarget.exe` for each run; they change between launches.
 - The injected DLL is x64-only in the current implementation.
 - PID-based MCP tools auto-inject by default with the packaged or repository-resolved `InternalDebuggerDLL.dll`; pass a custom `dll_path` only when you need a non-default build.
+- `write_memory` only writes to already writable committed pages and enforces payload size caps.
+- `invoke_function` is intentionally scoped to up to 6 Win64 arguments and supports integer, pointer, encoded string, and bounded buffer marshaling.
 - The native pipe server now accepts bursts of clients and serializes execution internally, which avoids the connection contention seen in the first implementation.
 
 ## Current status

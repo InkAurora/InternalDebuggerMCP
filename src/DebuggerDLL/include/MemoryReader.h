@@ -18,7 +18,9 @@ struct DereferenceStep {
 class MemoryReader {
 public:
     [[nodiscard]] bool IsReadable(std::uintptr_t address, std::size_t size) const;
+    [[nodiscard]] bool IsWritable(std::uintptr_t address, std::size_t size) const;
     [[nodiscard]] bool ReadBytes(std::uintptr_t address, std::size_t size, std::vector<std::uint8_t>& output) const;
+    [[nodiscard]] bool WriteBytes(std::uintptr_t address, const std::vector<std::uint8_t>& bytes) const;
     [[nodiscard]] bool ReadPointer(std::uintptr_t address, std::size_t pointerSize, std::uintptr_t& value) const;
     [[nodiscard]] std::vector<DereferenceStep> DereferenceChain(
         std::uintptr_t address,

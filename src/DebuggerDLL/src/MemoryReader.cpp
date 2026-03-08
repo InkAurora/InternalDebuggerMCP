@@ -24,9 +24,22 @@ namespace {
            baseProtect == PAGE_EXECUTE;
 }
 
-}  // namespace
+[[nodiscard]] bool IsWritableProtection(DWORD protect) {
+    if ((protect & PAGE_GUARD) != 0 || (protect & PAGE_NOACCESS) != 0) {
+        return false;
+    }
 
-bool MemoryReader::IsReadable(const std::uintptr_t address, const std::size_t size) const {
+    const DWORD baseProtect = protect & 0xFFU;
+    return baseProtect == PAGE_READWRITE ||
+           baseProtect == PAGE_WRITECOPY ||
+           baseProtect == PAGE_EXECUTE_READWRITE ||
+           baseProtect == PAGE_EXECUTE_WRITECOPY;
+}
+
+[[nodiscard]] bool IsWithinCommittedRegion(
+    const std::uintptr_t address,
+    const std::size_t size,
+    const DWORD requiredProtect) {
     if (address == 0 || size == 0) {
         return false;
     }
@@ -36,13 +49,30 @@ bool MemoryReader::IsReadable(const std::uintptr_t address, const std::size_t si
         return false;
     }
 
-    if (mbi.State != MEM_COMMIT || !IsReadableProtection(mbi.Protect)) {
+    if (mbi.State != MEM_COMMIT) {
+        return false;
+    }
+
+    const bool protectOk = requiredProtect == PAGE_READONLY
+        ? IsReadableProtection(mbi.Protect)
+        : IsWritableProtection(mbi.Protect);
+    if (!protectOk) {
         return false;
     }
 
     const auto regionStart = reinterpret_cast<std::uintptr_t>(mbi.BaseAddress);
     const auto regionEnd = regionStart + mbi.RegionSize;
     return address >= regionStart && address + size <= regionEnd;
+}
+
+}  // namespace
+
+bool MemoryReader::IsReadable(const std::uintptr_t address, const std::size_t size) const {
+    return IsWithinCommittedRegion(address, size, PAGE_READONLY);
+}
+
+bool MemoryReader::IsWritable(const std::uintptr_t address, const std::size_t size) const {
+    return IsWithinCommittedRegion(address, size, PAGE_READWRITE);
 }
 
 bool MemoryReader::ReadBytes(
@@ -82,6 +112,19 @@ bool MemoryReader::ReadPointer(
         value = *reinterpret_cast<const std::uint32_t*>(bytes.data());
     } else {
         value = static_cast<std::uintptr_t>(*reinterpret_cast<const std::uint64_t*>(bytes.data()));
+    }
+    return true;
+}
+
+bool MemoryReader::WriteBytes(const std::uintptr_t address, const std::vector<std::uint8_t>& bytes) const {
+    if (bytes.empty() || !IsWritable(address, bytes.size())) {
+        return false;
+    }
+
+    __try {
+        std::memcpy(reinterpret_cast<void*>(address), bytes.data(), bytes.size());
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
     }
     return true;
 }
