@@ -96,8 +96,9 @@ def build_injection_setup(module_file: str | Path | None = None) -> dict[str, An
         },
         "recommended_workflow": [
             "Call find_process_pid(process_name) to resolve the target PID.",
-            "Run Injector.exe with the target PID and the absolute DLL path returned here.",
-            "Call ping(pid) after injection to confirm the pipe is reachable.",
+            "Call ping(pid) or any PID-based debugger tool and let the MCP server inject automatically when needed.",
+            "Optionally pass dll_path to a PID-based debugger tool when you need a non-default DLL build.",
+            "Use the manual Injector.exe command returned here only as a troubleshooting or fallback path.",
             "Use read_memory, pattern_scan, list_modules, disassemble, or watch tools against the injected PID.",
         ],
         "vscode_mcp_setup": {
@@ -109,6 +110,7 @@ def build_injection_setup(module_file: str | Path | None = None) -> dict[str, An
         "notes": [
             "Injector.exe expects exactly: Injector.exe <pid> <full-dll-path>.",
             "The target process must be x64 for the current DLL build.",
+            "PID-based debugger tools now auto-inject by default before the first native request when the pipe is not already reachable.",
             "If OpenProcess or CreateRemoteThread fails, retry from an elevated shell when appropriate.",
         ],
     }

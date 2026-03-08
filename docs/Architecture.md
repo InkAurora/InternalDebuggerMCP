@@ -11,6 +11,7 @@
 2. Python MCP server
    - runs over stdio using the MCP Python SDK;
    - converts MCP tool invocations into pipe requests;
+   - injects `InternalDebuggerDLL.dll` with `Injector.exe` on first PID-based use when the pipe is not already reachable;
    - maintains target PID session state.
 
 3. Supporting tools

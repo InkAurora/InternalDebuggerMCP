@@ -182,10 +182,10 @@ $quickStart = @(
     "InternalDebuggerMCP release package",
     "",
     "1. Configure your MCP client to launch mcp-server\launch.py with a local Python 3.10+ interpreter.",
-    "2. Use the get_injection_setup MCP tool to discover the exact injector and DLL paths in this extraction.",
-    "3. Use find_process_pid to resolve the target process PID.",
-    "4. Run Injector.exe <PID> <full-dll-path> from an elevated shell when needed.",
-    "5. Call ping(pid) to confirm the injected pipe is reachable."
+    "2. Use find_process_pid to resolve the target process PID.",
+    "3. Call ping(pid) or any PID-based debugger tool and let the MCP server inject automatically when needed.",
+    "4. Use get_injection_setup if you need the resolved injector path, default DLL path, or manual fallback commands.",
+    "5. Run Injector.exe <PID> <full-dll-path> manually only when troubleshooting or when you need a custom fallback workflow."
 )
 $quickStart | Set-Content -LiteralPath (Join-Path $packageRoot "QUICKSTART.txt") -Encoding ASCII
 
