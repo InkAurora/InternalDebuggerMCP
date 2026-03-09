@@ -46,18 +46,36 @@ struct InvokeArgumentState {
     return bytes.empty() ? std::string{} : HexEncode(bytes);
 }
 
-[[nodiscard]] std::string WideToUtf8(const wchar_t* text) {
-    if (text == nullptr || *text == L'\0') {
+[[nodiscard]] std::wstring_view BoundedWideView(const wchar_t* text, const std::size_t capacity) {
+    if (text == nullptr || capacity == 0 || *text == L'\0') {
         return {};
     }
 
-    const int required = WideCharToMultiByte(CP_UTF8, 0, text, -1, nullptr, 0, nullptr, nullptr);
-    if (required <= 1) {
+    std::size_t length = 0;
+    while (length < capacity && text[length] != L'\0') {
+        ++length;
+    }
+    return std::wstring_view(text, length);
+}
+
+[[nodiscard]] std::string WideToUtf8(const std::wstring_view text) {
+    if (text.empty()) {
         return {};
     }
 
-    std::string converted(static_cast<std::size_t>(required - 1), '\0');
-    WideCharToMultiByte(CP_UTF8, 0, text, -1, converted.data(), required, nullptr, nullptr);
+    const int sourceLength = static_cast<int>(text.size());
+    const int required = WideCharToMultiByte(CP_UTF8, 0, text.data(), sourceLength, nullptr, 0, nullptr, nullptr);
+    if (required <= 0) {
+        return {};
+    }
+
+    std::string converted(static_cast<std::size_t>(required), '\0');
+    const int written = WideCharToMultiByte(CP_UTF8, 0, text.data(), sourceLength, converted.data(), required, nullptr, nullptr);
+    if (written <= 0) {
+        return {};
+    }
+
+    converted.resize(static_cast<std::size_t>(written));
     return converted;
 }
 
@@ -127,10 +145,10 @@ struct InvokeArgumentState {
 
     do {
         modules.push_back(ModuleRecord{
-            .name = WideToUtf8(entry.szModule),
+            .name = WideToUtf8(BoundedWideView(entry.szModule, std::size(entry.szModule))),
             .baseAddress = reinterpret_cast<std::uintptr_t>(entry.modBaseAddr),
             .imageSize = entry.modBaseSize,
-            .path = WideToUtf8(entry.szExePath),
+            .path = WideToUtf8(BoundedWideView(entry.szExePath, std::size(entry.szExePath))),
         });
     } while (Module32NextW(snapshot, &entry));
 

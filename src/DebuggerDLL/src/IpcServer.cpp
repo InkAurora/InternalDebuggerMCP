@@ -142,7 +142,8 @@ void IpcServer::ServeClient(void* pipeHandle) {
 
     if (!running_.load()) {
         const auto response = MakePipeError("server_stopping", "server is shutting down");
-        WriteFrame(pipeHandle, response);
+        const bool writeAttempted = WriteFrame(pipeHandle, response);
+        (void)writeAttempted;
         DisconnectNamedPipe(pipe);
         CloseHandle(pipe);
         return;
@@ -155,7 +156,8 @@ void IpcServer::ServeClient(void* pipeHandle) {
         std::scoped_lock lock(queueMutex_);
         if (workQueue_.size() >= kMaxQueuedRequests) {
             const auto response = MakePipeError("server_busy", "request queue is full");
-            WriteFrame(pipeHandle, response);
+            const bool writeAttempted = WriteFrame(pipeHandle, response);
+            (void)writeAttempted;
             DisconnectNamedPipe(pipe);
             CloseHandle(pipe);
             return;
@@ -175,7 +177,8 @@ void IpcServer::ServeClient(void* pipeHandle) {
         response = MakePipeError("internal_error", "response future failed");
     }
 
-    WriteFrame(pipeHandle, response);
+    const bool writeAttempted = WriteFrame(pipeHandle, response);
+    (void)writeAttempted;
     DisconnectNamedPipe(pipe);
     CloseHandle(pipe);
 }
@@ -214,13 +217,26 @@ std::string IpcServer::ReadFrame(void* pipeHandle) const {
 }
 
 bool IpcServer::WriteFrame(void* pipeHandle, const std::string& frame) const {
-    DWORD bytesWritten = 0;
-    return WriteFile(
-        AsHandle(pipeHandle),
-        frame.data(),
-        static_cast<DWORD>(frame.size()),
-        &bytesWritten,
-        nullptr) == TRUE;
+    const HANDLE pipe = AsHandle(pipeHandle);
+    std::size_t totalWritten = 0;
+    while (totalWritten < frame.size()) {
+        DWORD bytesWritten = 0;
+        const auto remaining = frame.size() - totalWritten;
+        const auto chunkSize = static_cast<DWORD>(std::min<std::size_t>(remaining, 64 * 1024));
+        const BOOL ok = WriteFile(
+            pipe,
+            frame.data() + totalWritten,
+            chunkSize,
+            &bytesWritten,
+            nullptr);
+        if (!ok || bytesWritten == 0) {
+            return false;
+        }
+
+        totalWritten += bytesWritten;
+    }
+
+    return FlushFileBuffers(pipe) == TRUE;
 }
 
 }  // namespace idmcp
