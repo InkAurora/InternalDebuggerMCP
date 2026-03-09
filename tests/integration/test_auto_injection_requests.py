@@ -22,6 +22,7 @@ from mcp_server.tools import _send_native_request  # noqa: E402
 
 
 DEBUGGER_DLL_NAME = "InternalDebuggerDLL.dll"
+TARGET_PROCESS_NAME = "TestTarget.exe"
 
 
 def _read_target_startup(process: subprocess.Popen[str]) -> dict[str, str]:
@@ -48,6 +49,33 @@ def _read_target_startup(process: subprocess.Popen[str]) -> dict[str, str]:
             symbols[label.strip()] = f"0x{value.strip()}"
 
     raise AssertionError("Timed out waiting for TestTarget startup banner")
+
+
+def _start_target_process(target_path: Path) -> tuple[subprocess.Popen[str], dict[str, str]]:
+    process = subprocess.Popen(
+        [str(target_path)],
+        cwd=REPO_ROOT,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        bufsize=1,
+    )
+    assert process.stdout is not None
+    return process, _read_target_startup(process)
+
+
+def _stop_target_process(process: subprocess.Popen[str] | None) -> None:
+    if process is None:
+        return
+    if process.poll() is None:
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5)
+    if process.stdout is not None:
+        process.stdout.close()
 
 
 def _is_module_loaded(pid: int, module_name: str) -> bool:
@@ -91,34 +119,23 @@ class AutoInjectionRequestsTest(unittest.TestCase):
         if missing:
             raise unittest.SkipTest(f"Missing build artifacts: {', '.join(str(path) for path in missing)}")
 
-        cls.target_process = subprocess.Popen(
-            [str(cls.target_path)],
-            cwd=REPO_ROOT,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            bufsize=1,
-        )
+        cls.target_process, cls.target_symbols = _start_target_process(cls.target_path)
         cls.target_pid = cls.target_process.pid
-        assert cls.target_process.stdout is not None
-        cls.target_symbols = _read_target_startup(cls.target_process)
         cls.session_manager = SessionManager()
 
     @classmethod
     def tearDownClass(cls) -> None:
-        if hasattr(cls, "target_process") and cls.target_process.poll() is None:
-            cls.target_process.terminate()
-            try:
-                cls.target_process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                cls.target_process.kill()
-                cls.target_process.wait(timeout=5)
-        if hasattr(cls, "target_process") and cls.target_process.stdout is not None:
-            cls.target_process.stdout.close()
+        if hasattr(cls, "target_process"):
+            _stop_target_process(cls.target_process)
 
     def test_first_request_auto_injects_and_returns_modules(self) -> None:
-        ping_fields = _send_native_request(self.session_manager, self.target_pid, "ping")
-        modules_fields = _send_native_request(self.session_manager, self.target_pid, "list_modules")
+        ping_fields = _send_native_request(self.session_manager, self.target_pid, "ping", process_name=TARGET_PROCESS_NAME)
+        modules_fields = _send_native_request(
+            self.session_manager,
+            self.target_pid,
+            "list_modules",
+            process_name=TARGET_PROCESS_NAME,
+        )
 
         self.assertEqual(ping_fields["pid"][0], str(self.target_pid))
         self.assertEqual(modules_fields["module_count"][0].isdigit(), True)
@@ -126,7 +143,12 @@ class AutoInjectionRequestsTest(unittest.TestCase):
         self.assertTrue(any("InternalDebuggerDLL.dll" in module for module in modules_fields.get("module", [])))
 
         for _ in range(5):
-            repeated = _send_native_request(self.session_manager, self.target_pid, "list_modules")
+            repeated = _send_native_request(
+                self.session_manager,
+                self.target_pid,
+                "list_modules",
+                process_name=TARGET_PROCESS_NAME,
+            )
             self.assertEqual(int(repeated["module_count"][0]), len(repeated.get("module", [])))
             self.assertTrue(any(module.startswith("TestTarget.exe|") for module in repeated.get("module", [])))
 
@@ -136,6 +158,7 @@ class AutoInjectionRequestsTest(unittest.TestCase):
             self.session_manager,
             self.target_pid,
             "write_memory",
+            process_name=TARGET_PROCESS_NAME,
             address=self.target_symbols["g_write_target"],
             bytes=payload,
             read_back=1,
@@ -144,6 +167,7 @@ class AutoInjectionRequestsTest(unittest.TestCase):
             self.session_manager,
             self.target_pid,
             "read_memory",
+            process_name=TARGET_PROCESS_NAME,
             address=self.target_symbols["g_write_target"],
             size=8,
         )
@@ -157,6 +181,7 @@ class AutoInjectionRequestsTest(unittest.TestCase):
             self.session_manager,
             self.target_pid,
             "invoke_function",
+            process_name=TARGET_PROCESS_NAME,
             address=self.target_symbols["SampleFunction"],
             arg_count=1,
             arg0_kind="u64",
@@ -166,6 +191,7 @@ class AutoInjectionRequestsTest(unittest.TestCase):
             self.session_manager,
             self.target_pid,
             "invoke_function",
+            process_name=TARGET_PROCESS_NAME,
             module="TestTarget.exe",
             export="ExportedStoreValue",
             arg_count=1,
@@ -176,6 +202,7 @@ class AutoInjectionRequestsTest(unittest.TestCase):
             self.session_manager,
             self.target_pid,
             "read_memory",
+            process_name=TARGET_PROCESS_NAME,
             address=self.target_symbols["g_write_target"],
             size=8,
         )
@@ -183,6 +210,7 @@ class AutoInjectionRequestsTest(unittest.TestCase):
             self.session_manager,
             self.target_pid,
             "invoke_function",
+            process_name=TARGET_PROCESS_NAME,
             module="TestTarget.exe",
             export="ExportedFillBuffer",
             arg_count=3,
@@ -209,17 +237,59 @@ class AutoInjectionRequestsTest(unittest.TestCase):
         self.assertEqual(output_bytes, "20 21 22 23 24 25 26 27")
 
     def test_eject_command_removes_debugger_and_allows_reinject(self) -> None:
-        ping_fields = _send_native_request(self.session_manager, self.target_pid, "ping")
+        ping_fields = _send_native_request(self.session_manager, self.target_pid, "ping", process_name=TARGET_PROCESS_NAME)
         self.assertEqual(ping_fields["pid"][0], str(self.target_pid))
         self.assertTrue(_wait_for_module_state(self.target_pid, DEBUGGER_DLL_NAME, loaded=True))
 
-        eject_fields = _send_native_request(self.session_manager, self.target_pid, "eject")
+        eject_fields = _send_native_request(
+            self.session_manager,
+            self.target_pid,
+            "eject",
+            process_name=TARGET_PROCESS_NAME,
+        )
         self.assertIn(eject_fields["eject_status"][0], {"scheduled", "already_requested"})
         self.assertTrue(_wait_for_module_state(self.target_pid, DEBUGGER_DLL_NAME, loaded=False))
 
-        reinjected_fields = _send_native_request(self.session_manager, self.target_pid, "ping")
+        reinjected_fields = _send_native_request(
+            self.session_manager,
+            self.target_pid,
+            "ping",
+            process_name=TARGET_PROCESS_NAME,
+        )
         self.assertEqual(reinjected_fields["pid"][0], str(self.target_pid))
         self.assertTrue(_wait_for_module_state(self.target_pid, DEBUGGER_DLL_NAME, loaded=True))
+
+
+class NameFallbackAutoInjectionRequestsTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.target_path = REPO_ROOT / "artifacts" / "Release" / "x64" / "TestTarget" / "TestTarget.exe"
+        cls.injector_path = REPO_ROOT / "artifacts" / "Release" / "x64" / "Injector" / "Injector.exe"
+        cls.dll_path = REPO_ROOT / "artifacts" / "Release" / "x64" / "InternalDebuggerDLL" / "InternalDebuggerDLL.dll"
+
+        missing = [path for path in (cls.target_path, cls.injector_path, cls.dll_path) if not path.exists()]
+        if missing:
+            raise unittest.SkipTest(f"Missing build artifacts: {', '.join(str(path) for path in missing)}")
+
+    def test_stale_pid_falls_back_to_exact_process_name(self) -> None:
+        stale_target, _ = _start_target_process(self.target_path)
+        stale_pid = stale_target.pid
+        _stop_target_process(stale_target)
+
+        replacement_target, _ = _start_target_process(self.target_path)
+        session_manager = SessionManager()
+
+        try:
+            fields = _send_native_request(
+                session_manager,
+                stale_pid,
+                "ping",
+                process_name=TARGET_PROCESS_NAME,
+            )
+            self.assertEqual(fields["pid"][0], str(replacement_target.pid))
+            self.assertTrue(_wait_for_module_state(replacement_target.pid, DEBUGGER_DLL_NAME, loaded=True))
+        finally:
+            _stop_target_process(replacement_target)
 
 
 if __name__ == "__main__":

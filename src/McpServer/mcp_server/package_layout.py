@@ -96,8 +96,8 @@ def build_injection_setup(module_file: str | Path | None = None) -> dict[str, An
         },
         "recommended_workflow": [
             "Call find_process_pid(process_name) to resolve the target PID.",
-            "Call ping(pid) or any PID-based debugger tool and let the MCP server inject automatically when needed.",
-            "Optionally pass dll_path to a PID-based debugger tool when you need a non-default DLL build.",
+            "Call ping(pid, process_name) or any auto-injecting debugger tool with both pid and process_name.",
+            "Optionally pass dll_path only when you need a non-default DLL build; omit it or use null for the default DLL.",
             "Use the manual Injector.exe command returned here only as a troubleshooting or fallback path.",
             "Use read_memory, pattern_scan, list_modules, disassemble, or watch tools against the injected PID.",
         ],
@@ -110,7 +110,8 @@ def build_injection_setup(module_file: str | Path | None = None) -> dict[str, An
         "notes": [
             "Injector.exe expects exactly: Injector.exe <pid> <full-dll-path>.",
             "The target process must be x64 for the current DLL build.",
-            "PID-based debugger tools now auto-inject by default before the first native request when the pipe is not already reachable.",
+            "Auto-injecting debugger tools require both pid and process_name; process_name is used as an exact-match fallback when the supplied PID is stale.",
+            "Empty-string dll_path values are treated the same as omitting dll_path and fall back to the default debugger DLL.",
             "If OpenProcess or CreateRemoteThread fails, retry from an elevated shell when appropriate.",
         ],
     }

@@ -40,15 +40,17 @@ def _make_layout(package_root: Path) -> RuntimeLayout:
 
 
 class _FakeClient:
-    def __init__(self, failures_before_success: int = 0) -> None:
+    def __init__(self, failures_before_success: int = 0, *, response_pid: int = 4242) -> None:
         self.failures_before_success = failures_before_success
         self.calls = 0
+        self.response_pid = response_pid
 
     def request(self, command: str, **fields: str | int) -> PipeResponse:
         self.calls += 1
         if self.calls <= self.failures_before_success:
             raise OSError(2, "The system cannot find the file specified")
-        return PipeResponse(raw="status=ok\npid=4242\n\n", fields={"status": ["ok"], "pid": ["4242"]})
+        pid_text = str(self.response_pid)
+        return PipeResponse(raw=f"status=ok\npid={pid_text}\n\n", fields={"status": ["ok"], "pid": [pid_text]})
 
 
 class _FakeSession:
@@ -57,18 +59,22 @@ class _FakeSession:
 
 
 class _FakeSessionManager:
-    def __init__(self, client: _FakeClient) -> None:
-        self._client = client
+    def __init__(self, clients: dict[int, _FakeClient] | None = None) -> None:
+        self._clients = clients or {}
         self._bootstrap_lock = Lock()
         self.cleanup_calls: list[tuple[int, str | None]] = []
-        self.remembered_paths: list[tuple[int, str | None]] = []
+        self.remembered_targets: list[tuple[int, str | None, str | None]] = []
         self.reset_pids: list[int] = []
 
     def get(self, pid: int) -> _FakeSession:
-        return _FakeSession(self._client)
+        client = self._clients.setdefault(pid, _FakeClient(response_pid=pid))
+        return _FakeSession(client)
+
+    def remember_target(self, pid: int, *, dll_path: str | None = None, process_name: str | None = None) -> None:
+        self.remembered_targets.append((pid, dll_path, process_name))
 
     def remember_dll_path(self, pid: int, dll_path: str | None) -> None:
-        self.remembered_paths.append((pid, dll_path))
+        self.remember_target(pid, dll_path=dll_path)
 
     def cleanup_pid(self, pid: int, dll_path: str | None = None) -> None:
         self.cleanup_calls.append((pid, dll_path))
@@ -146,30 +152,140 @@ class TestAutoInjection(unittest.TestCase):
 
         self.assertEqual(context.exception.code, "missing_dll")
 
+    def test_inject_debugger_treats_blank_dll_override_as_default(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            package_root = Path(temp_dir)
+            layout = _make_layout(package_root)
+            layout.injector_path.write_text("", encoding="ascii")
+            layout.dll_path.write_text("default", encoding="ascii")
+
+            with patch("mcp_server.injection.resolve_runtime_layout", return_value=layout):
+                with patch("mcp_server.injection.wait_for_debugger_pipe", side_effect=[False, True]):
+                    with patch(
+                        "mcp_server.injection.subprocess.run",
+                        return_value=subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
+                    ) as run_mock:
+                        result = inject_debugger(4242, dll_path="")
+
+        self.assertEqual(result.dll_path, str(layout.dll_path.resolve()))
+        self.assertEqual(run_mock.call_args.args[0], [str(layout.injector_path.resolve()), "4242", str(layout.dll_path.resolve())])
+
     def test_send_native_request_injects_after_transport_failure(self) -> None:
-        manager = _FakeSessionManager(_FakeClient(failures_before_success=2))
+        manager = _FakeSessionManager({4242: _FakeClient(failures_before_success=2, response_pid=4242)})
 
         with patch(
             "mcp_server.tools.inject_debugger",
             return_value=SimpleNamespace(dll_path="C:/debug/custom.dll"),
         ) as inject_mock:
-            fields = _send_native_request(manager, 4242, "ping", dll_path="C:/debug/custom.dll")
+            fields = _send_native_request(
+                manager,
+                4242,
+                "ping",
+                process_name="TestTarget.exe",
+                dll_path="C:/debug/custom.dll",
+            )
 
         self.assertEqual(fields["pid"][0], "4242")
         inject_mock.assert_called_once_with(4242, dll_path="C:/debug/custom.dll")
         self.assertEqual(manager.cleanup_calls, [(4242, "C:/debug/custom.dll"), (4242, "C:/debug/custom.dll")])
-        self.assertIn((4242, "C:/debug/custom.dll"), manager.remembered_paths)
+        self.assertIn((4242, "C:/debug/custom.dll", "TestTarget.exe"), manager.remembered_targets)
         self.assertEqual(manager.reset_pids, [])
 
     def test_send_native_request_skips_injection_when_pipe_is_already_live(self) -> None:
-        manager = _FakeSessionManager(_FakeClient(failures_before_success=0))
+        manager = _FakeSessionManager({4242: _FakeClient(failures_before_success=0, response_pid=4242)})
 
         with patch("mcp_server.tools.inject_debugger") as inject_mock:
-            fields = _send_native_request(manager, 4242, "ping")
+            fields = _send_native_request(manager, 4242, "ping", process_name="TestTarget.exe")
 
         self.assertEqual(fields["pid"][0], "4242")
         inject_mock.assert_not_called()
         self.assertEqual(manager.reset_pids, [])
+
+    def test_send_native_request_falls_back_to_process_name_when_original_pid_attach_fails(self) -> None:
+        original_pid = 4242
+        fallback_pid = 5252
+        manager = _FakeSessionManager(
+            {
+                original_pid: _FakeClient(failures_before_success=99, response_pid=original_pid),
+                fallback_pid: _FakeClient(failures_before_success=2, response_pid=fallback_pid),
+            }
+        )
+
+        with patch(
+            "mcp_server.tools.inject_debugger",
+            side_effect=[
+                InjectionError("pipe_timeout", "Timed out waiting for debugger pipe after injection"),
+                SimpleNamespace(dll_path="C:/debug/custom.dll"),
+            ],
+        ) as inject_mock:
+            with patch(
+                "mcp_server.tools._list_process_matches",
+                return_value=[{"name": "TestTarget.exe", "pid": fallback_pid}],
+            ):
+                fields = _send_native_request(
+                    manager,
+                    original_pid,
+                    "ping",
+                    process_name="TestTarget.exe",
+                    dll_path="C:/debug/custom.dll",
+                )
+
+        self.assertEqual(fields["pid"][0], str(fallback_pid))
+        self.assertEqual(
+            [call.args for call in inject_mock.call_args_list],
+            [(original_pid,), (fallback_pid,)],
+        )
+        self.assertEqual(
+            [call.kwargs for call in inject_mock.call_args_list],
+            [{"dll_path": "C:/debug/custom.dll"}, {"dll_path": "C:/debug/custom.dll"}],
+        )
+        self.assertIn((fallback_pid, "C:/debug/custom.dll", "TestTarget.exe"), manager.remembered_targets)
+
+    def test_send_native_request_reports_missing_process_name_match_after_pid_failure(self) -> None:
+        manager = _FakeSessionManager({4242: _FakeClient(failures_before_success=99, response_pid=4242)})
+
+        with patch(
+            "mcp_server.tools.inject_debugger",
+            side_effect=InjectionError("pipe_timeout", "Timed out waiting for debugger pipe after injection"),
+        ):
+            with patch("mcp_server.tools._list_process_matches", return_value=[]):
+                with self.assertRaises(RuntimeError) as context:
+                    _send_native_request(manager, 4242, "ping", process_name="TestTarget.exe")
+
+        self.assertIn("process_name_not_found", str(context.exception))
+
+    def test_send_native_request_reports_ambiguous_process_name_matches(self) -> None:
+        manager = _FakeSessionManager({4242: _FakeClient(failures_before_success=99, response_pid=4242)})
+
+        with patch(
+            "mcp_server.tools.inject_debugger",
+            side_effect=InjectionError("pipe_timeout", "Timed out waiting for debugger pipe after injection"),
+        ):
+            with patch(
+                "mcp_server.tools._list_process_matches",
+                return_value=[
+                    {"name": "TestTarget.exe", "pid": 5001},
+                    {"name": "TestTarget.exe", "pid": 5002},
+                ],
+            ):
+                with self.assertRaises(RuntimeError) as context:
+                    _send_native_request(manager, 4242, "ping", process_name="TestTarget.exe")
+
+        self.assertIn("process_name_ambiguous", str(context.exception))
+
+    def test_send_native_request_does_not_fallback_for_missing_injector_or_dll(self) -> None:
+        manager = _FakeSessionManager({4242: _FakeClient(failures_before_success=99, response_pid=4242)})
+
+        with patch(
+            "mcp_server.tools.inject_debugger",
+            side_effect=InjectionError("missing_dll", "Debugger DLL not found"),
+        ):
+            with patch("mcp_server.tools._list_process_matches") as lookup_mock:
+                with self.assertRaises(RuntimeError) as context:
+                    _send_native_request(manager, 4242, "ping", process_name="TestTarget.exe")
+
+        lookup_mock.assert_not_called()
+        self.assertIn("missing_dll", str(context.exception))
 
     def test_eject_debugger_reports_pipe_success_when_module_is_already_gone(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

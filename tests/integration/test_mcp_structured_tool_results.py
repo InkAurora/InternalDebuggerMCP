@@ -19,6 +19,7 @@ if str(MCP_SRC) not in sys.path:
 
 
 DEBUGGER_DLL_NAME = "InternalDebuggerDLL.dll"
+TARGET_PROCESS_NAME = "TestTarget.exe"
 
 
 def _read_target_startup(process) -> dict[str, str]:
@@ -126,12 +127,18 @@ class McpStructuredToolResultsTest(unittest.IsolatedAsyncioTestCase):
                     await session.initialize()
                     write_result = await session.call_tool(
                         "write_memory",
-                        {"pid": target.pid, "address": symbols["g_write_target"], "bytes_hex": "AA BB CC DD EE FF 00 11"},
+                        {
+                            "pid": target.pid,
+                            "process_name": TARGET_PROCESS_NAME,
+                            "address": symbols["g_write_target"],
+                            "bytes_hex": "AA BB CC DD EE FF 00 11",
+                        },
                     )
                     invoke_result = await session.call_tool(
                         "invoke_function",
                         {
                             "pid": target.pid,
+                            "process_name": TARGET_PROCESS_NAME,
                             "module": "TestTarget.exe",
                             "export": "ExportedFillBuffer",
                             "args": [
@@ -194,7 +201,10 @@ class McpStructuredToolResultsTest(unittest.IsolatedAsyncioTestCase):
                 async with ClientSession(read_stream, write_stream) as session:
                     await session.initialize()
 
-                    ping_result = await session.call_tool("ping", {"pid": target.pid})
+                    ping_result = await session.call_tool(
+                        "ping",
+                        {"pid": target.pid, "process_name": TARGET_PROCESS_NAME},
+                    )
                     self.assertFalse(ping_result.isError)
                     self.assertTrue(await asyncio.to_thread(_wait_for_module_state, target.pid, DEBUGGER_DLL_NAME, loaded=True))
 
@@ -208,7 +218,10 @@ class McpStructuredToolResultsTest(unittest.IsolatedAsyncioTestCase):
                     self.assertTrue(eject_result.structuredContent["cleared_session"])
                     self.assertTrue(await asyncio.to_thread(_wait_for_module_state, target.pid, DEBUGGER_DLL_NAME, loaded=False))
 
-                    reinject_result = await session.call_tool("ping", {"pid": target.pid})
+                    reinject_result = await session.call_tool(
+                        "ping",
+                        {"pid": target.pid, "process_name": TARGET_PROCESS_NAME},
+                    )
                     self.assertFalse(reinject_result.isError)
                     self.assertTrue(await asyncio.to_thread(_wait_for_module_state, target.pid, DEBUGGER_DLL_NAME, loaded=True))
 

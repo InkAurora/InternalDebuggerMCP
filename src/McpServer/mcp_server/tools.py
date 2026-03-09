@@ -27,6 +27,14 @@ from .session_manager import SessionManager
 StructuredToolResult = Annotated[CallToolResult, dict[str, Any]]
 
 
+class _NativeRequestFailure(RuntimeError):
+    def __init__(self, code: str, detail: str, *, allow_name_fallback: bool = False) -> None:
+        super().__init__(f"{code}: {detail}")
+        self.code = code
+        self.detail = detail
+        self.allow_name_fallback = allow_name_fallback
+
+
 def _hex_encode(data: bytes) -> str:
     return " ".join(f"{byte:02X}" for byte in data)
 
@@ -232,15 +240,21 @@ def _ejection_payload(result: EjectionResult, *, cleared_session: bool) -> dict[
     }
 
 
+def _format_native_failure(error: _NativeRequestFailure) -> str:
+    return f"{error.code}: {error.detail}"
+
+
+def _raise_native_failure(code: str, detail: str, *, allow_name_fallback: bool = False) -> None:
+    raise _NativeRequestFailure(code, detail, allow_name_fallback=allow_name_fallback)
+
+
 def _raise_runtime_for_native_error(session_manager: SessionManager, pid: int, error: NativeRequestError) -> None:
     if error.code == "server_busy":
-        raise RuntimeError("server_busy: native request queue is full; retry the request") from error
+        _raise_native_failure("server_busy", "native request queue is full; retry the request")
     if error.code == "server_stopping":
         session_manager.reset(pid)
-        raise RuntimeError(
-            "server_stopping: the target debugger is restarting or shutting down; retry after the pipe recovers"
-        ) from error
-    raise RuntimeError(f"{error.code}: {error.detail}") from error
+        _raise_native_failure("server_stopping", "the target debugger is restarting or shutting down; retry after the pipe recovers")
+    _raise_native_failure(error.code, error.detail)
 
 
 def _request_once(session_manager: SessionManager, pid: int, command: str, **fields: Any) -> dict[str, list[str]]:
@@ -253,18 +267,49 @@ def _cleanup_stale_session(session_manager: SessionManager, pid: int, dll_path: 
     try:
         session_manager.cleanup_pid(pid, dll_path=dll_path)
     except InjectionError as error:
-        raise RuntimeError(f"{error.code}: {error.detail}") from error
+        session_manager.reset(pid)
+        _raise_native_failure(
+            error.code,
+            error.detail,
+            allow_name_fallback=error.code not in {"missing_injector", "missing_dll"},
+        )
 
 
-def _send_native_request(
+def _resolve_exact_process_pid(process_name: str, *, failed_pid: int) -> int:
+    try:
+        matches = _list_process_matches(process_name, exact_match=True)
+    except subprocess.CalledProcessError as error:
+        detail = error.stderr.strip() or error.stdout.strip() or "tasklist exited with a non-zero status"
+        _raise_native_failure("process_lookup_failed", detail)
+    except ValueError as error:
+        _raise_native_failure("invalid_process_name", str(error))
+
+    if not matches:
+        _raise_native_failure(
+            "process_name_not_found",
+            f"exact process lookup for {process_name!r} returned no running processes after PID {failed_pid} attach failed",
+        )
+
+    if len(matches) > 1:
+        match_list = ", ".join(f"{match['name']}({match['pid']})" for match in matches)
+        _raise_native_failure(
+            "process_name_ambiguous",
+            f"exact process lookup for {process_name!r} returned multiple matches after PID {failed_pid} attach failed: {match_list}",
+        )
+
+    return int(matches[0]["pid"])
+
+
+def _send_native_request_for_pid(
     session_manager: SessionManager,
     pid: int,
     command: str,
     *,
+    process_name: str,
     dll_path: str | None = None,
     **fields: Any,
 ) -> dict[str, list[str]]:
-    session_manager.remember_dll_path(pid, dll_path)
+    session_manager.remember_target(pid, dll_path=dll_path, process_name=process_name)
 
     try:
         return _request_once(session_manager, pid, command, **fields)
@@ -284,9 +329,13 @@ def _send_native_request(
                 injection_result = inject_debugger(pid, dll_path=dll_path)
             except InjectionError as error:
                 session_manager.reset(pid)
-                raise RuntimeError(f"{error.code}: {error.detail}") from error
+                _raise_native_failure(
+                    error.code,
+                    error.detail,
+                    allow_name_fallback=error.code not in {"missing_injector", "missing_dll"},
+                )
 
-            session_manager.remember_dll_path(pid, injection_result.dll_path)
+            session_manager.remember_target(pid, dll_path=injection_result.dll_path, process_name=process_name)
 
             try:
                 return _request_once(session_manager, pid, command, **fields)
@@ -294,18 +343,66 @@ def _send_native_request(
                 _raise_runtime_for_native_error(session_manager, pid, error)
             except OSError as error:
                 _cleanup_stale_session(session_manager, pid, dll_path=dll_path)
-                raise RuntimeError(f"transport_error: {error}") from error
+                _raise_native_failure("transport_error", str(error), allow_name_fallback=True)
+
+
+def _send_native_request(
+    session_manager: SessionManager,
+    pid: int,
+    command: str,
+    *,
+    process_name: str,
+    dll_path: str | None = None,
+    **fields: Any,
+) -> dict[str, list[str]]:
+    try:
+        return _send_native_request_for_pid(
+            session_manager,
+            pid,
+            command,
+            process_name=process_name,
+            dll_path=dll_path,
+            **fields,
+        )
+    except _NativeRequestFailure as error:
+        if not error.allow_name_fallback:
+            raise RuntimeError(_format_native_failure(error)) from error
+        initial_error = error
+
+    fallback_pid = _resolve_exact_process_pid(process_name, failed_pid=pid)
+    if fallback_pid == pid:
+        raise RuntimeError(_format_native_failure(initial_error)) from initial_error
+
+    try:
+        return _send_native_request_for_pid(
+            session_manager,
+            fallback_pid,
+            command,
+            process_name=process_name,
+            dll_path=dll_path,
+            **fields,
+        )
+    except _NativeRequestFailure as error:
+        raise RuntimeError(_format_native_failure(error)) from error
 
 
 def create_mcp(session_manager: SessionManager) -> FastMCP:
     mcp = FastMCP("InternalDebuggerMCP", log_level="WARNING")
 
-    async def request(pid: int, command: str, *, dll_path: str | None = None, **fields: Any) -> dict[str, list[str]]:
+    async def request(
+        pid: int,
+        process_name: str,
+        command: str,
+        *,
+        dll_path: str | None = None,
+        **fields: Any,
+    ) -> dict[str, list[str]]:
         return await asyncio.to_thread(
             _send_native_request,
             session_manager,
             pid,
             command,
+            process_name=process_name,
             dll_path=dll_path,
             **fields,
         )
@@ -326,9 +423,9 @@ def create_mcp(session_manager: SessionManager) -> FastMCP:
     async def get_injection_setup() -> StructuredToolResult:
         return _structured_result(await asyncio.to_thread(build_injection_setup))
 
-    @mcp.tool(description="Check whether the debugger pipe for a target PID is reachable and report basic server state.")
-    async def ping(pid: int, dll_path: str | None = None) -> StructuredToolResult:
-        fields = await request(pid, "ping", dll_path=dll_path)
+    @mcp.tool(description="Check whether the debugger pipe for a target process is reachable. Requires both pid and process_name so stale PIDs can fall back to exact process-name resolution.")
+    async def ping(pid: int, process_name: str, dll_path: str | None = None) -> StructuredToolResult:
+        fields = await request(pid, process_name, "ping", dll_path=dll_path)
         return _structured_result(
             {
                 "pid": int(fields["pid"][0]),
@@ -347,9 +444,9 @@ def create_mcp(session_manager: SessionManager) -> FastMCP:
 
         return _structured_result(_ejection_payload(result, cleared_session=cleared_session))
 
-    @mcp.tool(description="Read a raw byte range from the memory of the target process at the supplied address.")
-    async def read_memory(pid: int, address: str, size: int, dll_path: str | None = None) -> StructuredToolResult:
-        fields = await request(pid, "read_memory", dll_path=dll_path, address=address, size=size)
+    @mcp.tool(description="Read a raw byte range from the memory of the target process at the supplied address. Requires both pid and process_name for stale-PID recovery.")
+    async def read_memory(pid: int, process_name: str, address: str, size: int, dll_path: str | None = None) -> StructuredToolResult:
+        fields = await request(pid, process_name, "read_memory", dll_path=dll_path, address=address, size=size)
         return _structured_result(
             {
                 "address": fields["address"][0],
@@ -358,9 +455,10 @@ def create_mcp(session_manager: SessionManager) -> FastMCP:
             }
         )
 
-    @mcp.tool(description="Write bytes or encoded text into a writable memory range inside the target process.")
+    @mcp.tool(description="Write bytes or encoded text into a writable memory range inside the target process. Requires both pid and process_name for stale-PID recovery.")
     async def write_memory(
         pid: int,
+        process_name: str,
         address: str,
         bytes_hex: str | None = None,
         text: str | None = None,
@@ -377,6 +475,7 @@ def create_mcp(session_manager: SessionManager) -> FastMCP:
         )
         fields = await request(
             pid,
+            process_name,
             "write_memory",
             dll_path=dll_path,
             address=address,
@@ -393,9 +492,10 @@ def create_mcp(session_manager: SessionManager) -> FastMCP:
             result["read_back"] = fields["read_back"][0]
         return _structured_result(result)
 
-    @mcp.tool(description="Follow a pointer chain in the target process and return each dereference step.")
+    @mcp.tool(description="Follow a pointer chain in the target process and return each dereference step. Requires both pid and process_name for stale-PID recovery.")
     async def dereference(
         pid: int,
+        process_name: str,
         address: str,
         depth: int = 3,
         pointer_size: int = 8,
@@ -403,6 +503,7 @@ def create_mcp(session_manager: SessionManager) -> FastMCP:
     ) -> StructuredToolResult:
         fields = await request(
             pid,
+            process_name,
             "dereference",
             dll_path=dll_path,
             address=address,
@@ -415,9 +516,9 @@ def create_mcp(session_manager: SessionManager) -> FastMCP:
             steps.append({"address": current, "value": value, "status": status})
         return _structured_result({"start_address": fields["start_address"][0], "steps": steps})
 
-    @mcp.tool(description="Enumerate loaded modules in the target process with base addresses, image sizes, and paths.")
-    async def list_modules(pid: int, dll_path: str | None = None) -> StructuredToolResult:
-        fields = await request(pid, "list_modules", dll_path=dll_path)
+    @mcp.tool(description="Enumerate loaded modules in the target process with base addresses, image sizes, and paths. Requires both pid and process_name for stale-PID recovery.")
+    async def list_modules(pid: int, process_name: str, dll_path: str | None = None) -> StructuredToolResult:
+        fields = await request(pid, process_name, "list_modules", dll_path=dll_path)
         modules = []
         for module in _split_records(fields.get("module", []), 4):
             if len(module) != 4:
@@ -429,9 +530,10 @@ def create_mcp(session_manager: SessionManager) -> FastMCP:
             payload["enumeration_method"] = fields["enumeration_method"][0]
         return _structured_result(payload)
 
-    @mcp.tool(description="Scan readable committed memory in the target process for a byte pattern with optional wildcards.")
+    @mcp.tool(description="Scan readable committed memory in the target process for a byte pattern with optional wildcards. Requires both pid and process_name for stale-PID recovery.")
     async def pattern_scan(
         pid: int,
+        process_name: str,
         pattern: str,
         start_address: str | None = None,
         region_size: int | None = None,
@@ -443,7 +545,7 @@ def create_mcp(session_manager: SessionManager) -> FastMCP:
             native_fields["start"] = start_address
         if region_size is not None:
             native_fields["size"] = region_size
-        fields = await request(pid, "pattern_scan", dll_path=dll_path, **native_fields)
+        fields = await request(pid, process_name, "pattern_scan", dll_path=dll_path, **native_fields)
         return _structured_result(
             {
                 "match_count": int(fields["match_count"][0]),
@@ -451,9 +553,10 @@ def create_mcp(session_manager: SessionManager) -> FastMCP:
             }
         )
 
-    @mcp.tool(description="Start polling a target address for changes and create a watch that can be queried for change events.")
+    @mcp.tool(description="Start polling a target address for changes and create a watch that can be queried for change events. Requires both pid and process_name for stale-PID recovery.")
     async def watch_address(
         pid: int,
+        process_name: str,
         address: str,
         size: int,
         interval_ms: int = 250,
@@ -462,6 +565,7 @@ def create_mcp(session_manager: SessionManager) -> FastMCP:
     ) -> StructuredToolResult:
         fields = await request(
             pid,
+            process_name,
             "watch_address",
             dll_path=dll_path,
             address=address,
@@ -477,14 +581,14 @@ def create_mcp(session_manager: SessionManager) -> FastMCP:
             }
         )
 
-    @mcp.tool(description="Remove an existing memory watch from the target process by watch identifier.")
-    async def unwatch_address(pid: int, watch_id: str, dll_path: str | None = None) -> StructuredToolResult:
-        fields = await request(pid, "unwatch_address", dll_path=dll_path, watch_id=watch_id)
+    @mcp.tool(description="Remove an existing memory watch from the target process by watch identifier. Requires both pid and process_name for stale-PID recovery.")
+    async def unwatch_address(pid: int, process_name: str, watch_id: str, dll_path: str | None = None) -> StructuredToolResult:
+        fields = await request(pid, process_name, "unwatch_address", dll_path=dll_path, watch_id=watch_id)
         return _structured_result({"watch_id": fields["watch_id"][0], "removed": True})
 
-    @mcp.tool(description="Fetch pending change events for active memory watches in the target process.")
-    async def poll_watch_events(pid: int, limit: int = 16, dll_path: str | None = None) -> StructuredToolResult:
-        fields = await request(pid, "poll_watch_events", dll_path=dll_path, limit=limit)
+    @mcp.tool(description="Fetch pending change events for active memory watches in the target process. Requires both pid and process_name for stale-PID recovery.")
+    async def poll_watch_events(pid: int, process_name: str, limit: int = 16, dll_path: str | None = None) -> StructuredToolResult:
+        fields = await request(pid, process_name, "poll_watch_events", dll_path=dll_path, limit=limit)
         events = []
         for event in _split_records(fields.get("event", []), 5):
             if len(event) != 5:
@@ -501,19 +605,21 @@ def create_mcp(session_manager: SessionManager) -> FastMCP:
             )
         return _structured_result({"event_count": int(fields["event_count"][0]), "events": events})
 
-    @mcp.tool(description="Disassemble a byte range from the target process into lightweight native instruction records.")
+    @mcp.tool(description="Disassemble a byte range from the target process into lightweight native instruction records. Requires both pid and process_name for stale-PID recovery.")
     async def disassemble(
         pid: int,
+        process_name: str,
         address: str,
         size: int = 64,
         max_instructions: int = 16,
         dll_path: str | None = None,
     ) -> StructuredToolResult:
-        read_fields = await request(pid, "read_memory", dll_path=dll_path, address=address, size=size)
+        read_fields = await request(pid, process_name, "read_memory", dll_path=dll_path, address=address, size=size)
         instructions = _capstone_disassemble(address, read_fields["bytes"][0], max_instructions)
         if instructions is None:
             fields = await request(
                 pid,
+                process_name,
                 "disassemble",
                 dll_path=dll_path,
                 address=address,
@@ -541,9 +647,10 @@ def create_mcp(session_manager: SessionManager) -> FastMCP:
             }
         )
 
-    @mcp.tool(description="Invoke an in-process function by raw address or loaded module export and return the result plus any output buffers.")
+    @mcp.tool(description="Invoke an in-process function by raw address or loaded module export and return the result plus any output buffers. Requires both pid and process_name for stale-PID recovery.")
     async def invoke_function(
         pid: int,
+        process_name: str,
         address: str | None = None,
         module: str | None = None,
         export: str | None = None,
@@ -558,7 +665,7 @@ def create_mcp(session_manager: SessionManager) -> FastMCP:
         else:
             native_fields["module"] = module
             native_fields["export"] = export
-        fields = await request(pid, "invoke_function", dll_path=dll_path, **native_fields)
+        fields = await request(pid, process_name, "invoke_function", dll_path=dll_path, **native_fields)
         return _structured_result(
             {
                 "resolved_address": fields["resolved_address"][0],
@@ -568,9 +675,9 @@ def create_mcp(session_manager: SessionManager) -> FastMCP:
             }
         )
 
-    @mcp.tool(description="Capture the current thread register snapshot exposed by the debugger for the target process.")
-    async def registers(pid: int, dll_path: str | None = None) -> StructuredToolResult:
-        fields = await request(pid, "registers", dll_path=dll_path)
+    @mcp.tool(description="Capture the current thread register snapshot exposed by the debugger for the target process. Requires both pid and process_name for stale-PID recovery.")
+    async def registers(pid: int, process_name: str, dll_path: str | None = None) -> StructuredToolResult:
+        fields = await request(pid, process_name, "registers", dll_path=dll_path)
         registers_data: dict[str, str] = {}
         for item in fields.get("register", []):
             name, value = item.split("|", 1)

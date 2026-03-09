@@ -49,3 +49,6 @@ class TestInjectionSetup(unittest.TestCase):
         self.assertIn("<PID>", setup["injector_command"]["powershell"])
         self.assertEqual(setup["vscode_mcp_setup"]["python_command"], "python")
         self.assertEqual(setup["pipe_name_pattern"], r"\\.\pipe\InternalDebuggerMCP_<pid>")
+        self.assertIn("ping(pid, process_name)", setup["recommended_workflow"][1])
+        self.assertIn("omit it or use null", setup["recommended_workflow"][2])
+        self.assertIn("Empty-string dll_path values are treated the same as omitting dll_path", setup["notes"][3])

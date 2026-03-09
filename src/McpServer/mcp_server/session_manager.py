@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Lock
 
-from .injection import EjectionResult, eject_debugger
+from .injection import EjectionResult, eject_debugger, normalize_dll_path_override
 from .pipe_client import PipeClient
 
 
@@ -13,6 +13,7 @@ class DebuggerSession:
     pid: int
     client: PipeClient
     dll_path: str | None = None
+    process_name: str | None = None
 
 
 @dataclass(slots=True)
@@ -48,19 +49,34 @@ class SessionManager:
         with self._lock:
             return pid in self._sessions
 
-    def remember_dll_path(self, pid: int, dll_path: str | Path | None) -> None:
-        if dll_path is None:
-            return
-
-        resolved = str(Path(dll_path).expanduser().resolve())
+    def remember_target(
+        self,
+        pid: int,
+        *,
+        dll_path: str | Path | None = None,
+        process_name: str | None = None,
+    ) -> None:
+        normalized_dll_path = normalize_dll_path_override(dll_path)
+        resolved_dll_path = str(Path(normalized_dll_path).expanduser().resolve()) if normalized_dll_path is not None else None
         with self._lock:
             session = self._get_or_create_session_locked(pid)
-            session.dll_path = resolved
+            if resolved_dll_path is not None:
+                session.dll_path = resolved_dll_path
+            if process_name is not None:
+                session.process_name = process_name
+
+    def remember_dll_path(self, pid: int, dll_path: str | Path | None) -> None:
+        self.remember_target(pid, dll_path=dll_path)
 
     def cleanup_pid(self, pid: int, dll_path: str | Path | None = None) -> EjectionResult:
         with self._lock:
             session = self._sessions.get(pid)
-            effective_dll_path = str(Path(dll_path).expanduser().resolve()) if dll_path is not None else session.dll_path if session else None
+            normalized_dll_path = normalize_dll_path_override(dll_path)
+            effective_dll_path = (
+                str(Path(normalized_dll_path).expanduser().resolve())
+                if normalized_dll_path is not None
+                else session.dll_path if session else None
+            )
 
         try:
             return eject_debugger(pid, dll_path=effective_dll_path)

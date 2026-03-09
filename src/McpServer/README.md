@@ -2,13 +2,15 @@
 
 This package exposes the injected debugger over MCP using the official Python MCP SDK.
 
-The server now injects the debugger DLL automatically the first time a PID-based tool targets a process whose named pipe is not already reachable at `\\.\pipe\InternalDebuggerMCP_<pid>`.
+The server now injects the debugger DLL automatically the first time an auto-injecting tool targets a process whose named pipe is not already reachable at `\\.\pipe\InternalDebuggerMCP_<pid>`.
 
-The server also exposes `find_process_pid`, which queries Windows for already running processes and returns matching PIDs before you call the PID-based debugger tools.
+Auto-injecting tools now require both `pid` and `process_name`. The server still targets PID-based named pipes internally, but if the supplied PID can no longer be attached cleanly it falls back to an exact `process_name` lookup and retries against the resolved PID.
+
+The server also exposes `find_process_pid`, which queries Windows for already running processes and returns matching PIDs before you call the auto-injecting debugger tools.
 
 The server exposes `get_injection_setup`, which returns the injector path, DLL path, manual fallback command templates, and MCP launcher path for the current runtime layout. When the server runs from the packaged release zip, these paths point into the extracted package instead of the repository.
 
-PID-based debugger tools accept an optional `dll_path` override. In the normal flow, you only need to provide the PID and let the server use its resolved default DLL path.
+Auto-injecting debugger tools accept an optional `dll_path` override. In the normal flow, provide both the current PID and the process name and let the server use its resolved default DLL path.
 
 ## Install
 

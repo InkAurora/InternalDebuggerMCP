@@ -40,10 +40,19 @@ class InjectionError(RuntimeError):
         self.detail = detail
 
 
+def normalize_dll_path_override(dll_path: str | Path | None) -> str | Path | None:
+    if isinstance(dll_path, str) and not dll_path.strip():
+        return None
+    return dll_path
+
+
 def resolve_injection_paths(dll_path: str | Path | None = None, *, require_dll_exists: bool = True) -> InjectionPaths:
     layout = resolve_runtime_layout()
     injector_path = layout.injector_path.resolve()
-    resolved_dll_path = Path(dll_path).expanduser().resolve() if dll_path is not None else layout.dll_path.resolve()
+    normalized_dll_path = normalize_dll_path_override(dll_path)
+    resolved_dll_path = (
+        Path(normalized_dll_path).expanduser().resolve() if normalized_dll_path is not None else layout.dll_path.resolve()
+    )
 
     if not injector_path.exists():
         raise InjectionError("missing_injector", f"Injector executable not found: {injector_path}")
