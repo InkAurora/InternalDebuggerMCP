@@ -72,6 +72,7 @@ Repeated fields are allowed and used for list-like data such as modules, instruc
 - writes are limited to committed writable pages and do not auto-change page protections;
 - dereference depth is limited;
 - pattern scans only walk committed readable regions;
+- `pattern_scan` can match either wildcard AOB text or exact bytes plus a separate mask, and offset-adjusted results are applied only after raw pattern starts are found;
 - generated AOB patterns are validated against committed readable regions and currently search up to 128 bytes per request;
 - function invocation is limited to the in-process x64 ABI and a bounded argument count;
 - watch count is capped;

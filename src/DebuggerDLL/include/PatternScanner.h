@@ -19,7 +19,11 @@ class PatternScanner {
 public:
     explicit PatternScanner(const MemoryReader& memoryReader);
 
-    [[nodiscard]] bool ParsePattern(const std::string& patternText, std::vector<PatternByte>& pattern) const;
+    [[nodiscard]] bool ParsePattern(
+        const std::string& patternText,
+        const std::optional<std::string>& maskText,
+        std::vector<PatternByte>& pattern,
+        std::string& error) const;
     [[nodiscard]] std::vector<std::uintptr_t> Scan(
         const std::vector<PatternByte>& pattern,
         std::optional<std::uintptr_t> start,

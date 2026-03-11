@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import re
 import subprocess
 import sys
 import time
@@ -372,6 +373,8 @@ class AutoInjectionRequestsTest(unittest.TestCase):
             "pattern_scan",
             process_name=TARGET_PROCESS_NAME,
             pattern=code_pattern["pattern"][0],
+            mask=code_pattern["mask"][0],
+            target_offset=code_pattern["target_offset"][0],
             limit=2,
         )
         data_matches = _send_native_request(
@@ -380,6 +383,8 @@ class AutoInjectionRequestsTest(unittest.TestCase):
             "pattern_scan",
             process_name=TARGET_PROCESS_NAME,
             pattern=data_pattern["pattern"][0],
+            mask=data_pattern["mask"][0],
+            target_offset=data_pattern["target_offset"][0],
             limit=2,
         )
 
@@ -387,8 +392,10 @@ class AutoInjectionRequestsTest(unittest.TestCase):
         self.assertEqual(data_pattern["match_count"][0], "1")
         self.assertEqual(code_matches["match_count"][0], "1")
         self.assertEqual(data_matches["match_count"][0], "1")
-        self.assertEqual(code_matches["match"][0].lower(), code_pattern["pattern_start"][0].lower())
-        self.assertEqual(data_matches["match"][0].lower(), data_pattern["pattern_start"][0].lower())
+        self.assertEqual(code_matches["match"][0].lower(), code_address.lower())
+        self.assertEqual(data_matches["match"][0].lower(), data_address.lower())
+        self.assertEqual(code_matches["match_start"][0].lower(), code_pattern["pattern_start"][0].lower())
+        self.assertEqual(data_matches["match_start"][0].lower(), data_pattern["pattern_start"][0].lower())
 
         self.assertEqual(
             int(code_pattern["pattern_start"][0], 16) + int(code_pattern["target_offset"][0]),
@@ -400,6 +407,46 @@ class AutoInjectionRequestsTest(unittest.TestCase):
         )
         self.assertEqual(len(code_pattern["mask"][0]), int(code_pattern["byte_count"][0]))
         self.assertEqual(len(data_pattern["mask"][0]), int(data_pattern["byte_count"][0]))
+
+    def test_pattern_scan_supports_separate_mask_and_offset(self) -> None:
+        marker_pattern = "49 4E 54 45 52 4E 41 4C 5F 44 45 42 55 47 47 45 52 5F 4D 43 50 5F 50 41 54 54 45 52 4E"
+        marker_mask = "xxxx?xxxxxxxxxxxxxxxxxxxxxxxx"
+        marker_target = f"0x{int(self.target_symbols['g_pattern'], 16) + 4:X}"
+
+        results = _send_native_request(
+            self.session_manager,
+            self.target_pid,
+            "pattern_scan",
+            process_name=TARGET_PROCESS_NAME,
+            pattern=marker_pattern,
+            mask=marker_mask,
+            target_offset=4,
+            limit=2,
+        )
+
+        self.assertEqual(results["match_count"][0], "1")
+        self.assertEqual(results["match"][0].lower(), marker_target.lower())
+        self.assertEqual(results["match_start"][0].lower(), self.target_symbols["g_pattern"].lower())
+
+    def test_pattern_scan_rejects_invalid_mask_requests(self) -> None:
+        cases = [
+            ({"pattern": "AA BB", "mask": "x"}, "mask length must match the pattern byte count"),
+            ({"pattern": "AA BB", "mask": "xz"}, "mask must contain only x and ? characters"),
+            ({"pattern": "AA ??", "mask": "xx"}, "mask marks an exact byte where the pattern uses ??"),
+            ({"pattern": "AA BB", "target_offset": "abc"}, "target_offset must be an unsigned integer"),
+        ]
+
+        for fields, message in cases:
+            with self.subTest(fields=fields):
+                with self.assertRaisesRegex(RuntimeError, re.escape(message)):
+                    _send_native_request(
+                        self.session_manager,
+                        self.target_pid,
+                        "pattern_scan",
+                        process_name=TARGET_PROCESS_NAME,
+                        limit=1,
+                        **fields,
+                    )
 
     def test_create_aob_pattern_fails_when_search_budget_is_too_small(self) -> None:
         with self.assertRaisesRegex(RuntimeError, "pattern_generation_failed"):

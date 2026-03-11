@@ -413,6 +413,8 @@ class McpStructuredToolResultsTest(unittest.IsolatedAsyncioTestCase):
                             "pid": target.pid,
                             "process_name": TARGET_PROCESS_NAME,
                             "pattern": code_pattern.structuredContent["pattern"],
+                            "mask": code_pattern.structuredContent["mask"],
+                            "target_offset": code_pattern.structuredContent["target_offset"],
                             "limit": 2,
                         },
                     )
@@ -422,6 +424,8 @@ class McpStructuredToolResultsTest(unittest.IsolatedAsyncioTestCase):
                             "pid": target.pid,
                             "process_name": TARGET_PROCESS_NAME,
                             "pattern": data_pattern.structuredContent["pattern"],
+                            "mask": data_pattern.structuredContent["mask"],
+                            "target_offset": data_pattern.structuredContent["target_offset"],
                             "limit": 2,
                         },
                     )
@@ -450,8 +454,10 @@ class McpStructuredToolResultsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data_pattern.structuredContent["match_count"], 1)
         self.assertEqual(code_scan.structuredContent["match_count"], 1)
         self.assertEqual(data_scan.structuredContent["match_count"], 1)
-        self.assertEqual(code_scan.structuredContent["matches"][0].lower(), code_pattern.structuredContent["pattern_start"].lower())
-        self.assertEqual(data_scan.structuredContent["matches"][0].lower(), data_pattern.structuredContent["pattern_start"].lower())
+        self.assertEqual(code_scan.structuredContent["matches"][0].lower(), code_address.lower())
+        self.assertEqual(data_scan.structuredContent["matches"][0].lower(), data_address.lower())
+        self.assertEqual(code_scan.structuredContent["match_starts"][0].lower(), code_pattern.structuredContent["pattern_start"].lower())
+        self.assertEqual(data_scan.structuredContent["match_starts"][0].lower(), data_pattern.structuredContent["pattern_start"].lower())
         self.assertEqual(
             int(code_pattern.structuredContent["pattern_start"], 16) + code_pattern.structuredContent["target_offset"],
             int(code_address, 16),
@@ -462,6 +468,61 @@ class McpStructuredToolResultsTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(len(code_pattern.structuredContent["mask"]), code_pattern.structuredContent["byte_count"])
         self.assertEqual(len(data_pattern.structuredContent["mask"]), data_pattern.structuredContent["byte_count"])
+
+    async def test_pattern_scan_accepts_separate_mask_and_returns_match_starts(self) -> None:
+        target_path = REPO_ROOT / "artifacts" / "Release" / "x64" / "TestTarget" / "TestTarget.exe"
+        if not target_path.exists():
+            raise unittest.SkipTest(f"Missing build artifact: {target_path}")
+
+        target = subprocess.Popen(
+            [str(target_path)],
+            cwd=REPO_ROOT,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            bufsize=1,
+        )
+        assert target.stdout is not None
+        symbols = _read_target_startup(target)
+
+        server = StdioServerParameters(
+            command=sys.executable,
+            args=[str(MCP_SRC / "launch.py")],
+            cwd=str(MCP_SRC),
+            env={"PYTHONUTF8": "1", "PYTHONUNBUFFERED": "1"},
+        )
+
+        try:
+            async with stdio_client(server) as (read_stream, write_stream):
+                async with ClientSession(read_stream, write_stream) as session:
+                    await session.initialize()
+                    scan = await session.call_tool(
+                        "pattern_scan",
+                        {
+                            "pid": target.pid,
+                            "process_name": TARGET_PROCESS_NAME,
+                            "pattern": "49 4E 54 45 52 4E 41 4C 5F 44 45 42 55 47 47 45 52 5F 4D 43 50 5F 50 41 54 54 45 52 4E",
+                            "mask": "xxxx?xxxxxxxxxxxxxxxxxxxxxxxx",
+                            "target_offset": 4,
+                            "limit": 2,
+                        },
+                    )
+        finally:
+            if target.poll() is None:
+                target.terminate()
+                try:
+                    target.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    target.kill()
+                    target.wait(timeout=5)
+            if target.stdout is not None:
+                target.stdout.close()
+
+        self.assertFalse(scan.isError)
+        assert scan.structuredContent is not None
+        self.assertEqual(scan.structuredContent["match_count"], 1)
+        self.assertEqual(scan.structuredContent["matches"][0].lower(), f"0x{int(symbols['g_pattern'], 16) + 4:X}".lower())
+        self.assertEqual(scan.structuredContent["match_starts"][0].lower(), symbols["g_pattern"].lower())
 
 
 if __name__ == "__main__":

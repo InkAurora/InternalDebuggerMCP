@@ -124,6 +124,7 @@ class BurstPipeRequestsTest(unittest.TestCase):
             ("ping", {}),
             ("list_modules", {}),
             ("pattern_scan", {"pattern": self.marker_pattern, "limit": 1}),
+            ("pattern_scan", {"pattern": self.marker_pattern, "mask": "xxxx?xxxxxxxxxxxxxxxxxxxxxxxx", "target_offset": 4, "limit": 1}),
             ("read_memory", {"address": self.marker_address, "size": 29}),
             ("disassemble", {"address": self.function_address, "size": 6, "max_instructions": 6}),
             ("list_modules", {}),
@@ -145,11 +146,14 @@ class BurstPipeRequestsTest(unittest.TestCase):
         self.assertEqual(results[0]["status"][0], "ok")
         self.assertEqual(results[1]["status"][0], "ok")
         self.assertEqual(results[2]["match_count"][0], "1")
-        self.assertEqual(results[3]["bytes"][0], self.marker_pattern)
-        self.assertEqual(results[4]["instruction_count"][0], "4")
-        self.assertTrue(any(module.startswith("TestTarget.exe|") for module in results[5].get("module", [])))
-        self.assertEqual(results[6]["match_count"][0], "1")
-        self.assertEqual(results[7]["status"][0], "ok")
+        self.assertEqual(results[3]["match_count"][0], "1")
+        self.assertEqual(int(results[3]["match_start"][0], 16), int(self.marker_address, 16))
+        self.assertEqual(int(results[3]["match"][0], 16), int(self.marker_address, 16) + 4)
+        self.assertEqual(results[4]["bytes"][0], self.marker_pattern)
+        self.assertEqual(results[5]["instruction_count"][0], "4")
+        self.assertTrue(any(module.startswith("TestTarget.exe|") for module in results[6].get("module", [])))
+        self.assertEqual(results[7]["match_count"][0], "1")
+        self.assertEqual(results[8]["status"][0], "ok")
 
 
 if __name__ == "__main__":

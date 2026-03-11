@@ -345,6 +345,18 @@ struct InvokeArgumentState {
     return true;
 }
 
+[[nodiscard]] bool TryAddOffset(
+    const std::uintptr_t base,
+    const std::uint64_t offset,
+    std::uintptr_t& result) {
+    if (offset > static_cast<std::uint64_t>((std::numeric_limits<std::uintptr_t>::max)() - base)) {
+        result = 0;
+        return false;
+    }
+    result = base + static_cast<std::uintptr_t>(offset);
+    return true;
+}
+
 }  // namespace
 
 DebuggerService& DebuggerService::Instance() {
@@ -668,13 +680,19 @@ std::string DebuggerService::HandlePatternScan(const ParsedMessage& message) con
     }
 
     std::vector<PatternByte> pattern;
-    if (!patternScanner_.ParsePattern(*patternText, pattern)) {
-        return MakeError("invalid_pattern", "pattern must be space-separated hex bytes or ?? wildcards");
+    std::string patternError;
+    if (!patternScanner_.ParsePattern(*patternText, message.GetFirst("mask"), pattern, patternError)) {
+        return MakeError("invalid_pattern", patternError);
     }
 
     const auto start = ParseAddress(message.GetFirst("start").value_or(""));
     const auto size = ParseUnsigned(message.GetFirst("size").value_or(""));
     const auto limit = ParseUnsigned(message.GetFirst("limit").value_or(std::to_string(kMaxPatternResults)));
+    const auto targetOffset = ParseUnsigned(message.GetFirst("target_offset").value_or(""));
+    if (message.GetFirst("target_offset").has_value() && !targetOffset.has_value()) {
+        return MakeError("invalid_arguments", "target_offset must be an unsigned integer");
+    }
+
     const auto matches = patternScanner_.Scan(
         pattern,
         start,
@@ -683,7 +701,17 @@ std::string DebuggerService::HandlePatternScan(const ParsedMessage& message) con
 
     std::vector<MessageField> fields{{"match_count", std::to_string(matches.size())}};
     for (const auto match : matches) {
-        fields.emplace_back("match", ToHex(match));
+        if (!targetOffset.has_value()) {
+            fields.emplace_back("match", ToHex(match));
+            continue;
+        }
+
+        std::uintptr_t adjusted = 0;
+        if (!TryAddOffset(match, *targetOffset, adjusted)) {
+            return MakeError("invalid_arguments", "target_offset would overflow the matched address");
+        }
+        fields.emplace_back("match", ToHex(adjusted));
+        fields.emplace_back("match_start", ToHex(match));
     }
     return MakeOk(std::move(fields));
 }

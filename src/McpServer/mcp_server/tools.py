@@ -535,23 +535,30 @@ def create_mcp(session_manager: SessionManager) -> FastMCP:
         pid: int,
         process_name: str,
         pattern: str,
+        mask: str | None = None,
+        target_offset: int | None = None,
         start_address: str | None = None,
         region_size: int | None = None,
         limit: int = 32,
         dll_path: str | None = None,
     ) -> StructuredToolResult:
         native_fields: dict[str, Any] = {"pattern": pattern, "limit": limit}
+        if mask is not None:
+            native_fields["mask"] = mask
+        if target_offset is not None:
+            native_fields["target_offset"] = target_offset
         if start_address is not None:
             native_fields["start"] = start_address
         if region_size is not None:
             native_fields["size"] = region_size
         fields = await request(pid, process_name, "pattern_scan", dll_path=dll_path, **native_fields)
-        return _structured_result(
-            {
-                "match_count": int(fields["match_count"][0]),
-                "matches": fields.get("match", []),
-            }
-        )
+        payload: dict[str, Any] = {
+            "match_count": int(fields["match_count"][0]),
+            "matches": fields.get("match", []),
+        }
+        if "match_start" in fields:
+            payload["match_starts"] = fields["match_start"]
+        return _structured_result(payload)
 
     @mcp.tool(description="Generate a process-wide unique x64dbg-style AOB pattern for a readable target address. The generated pattern may begin before the requested address and can optionally include a mask and target offset. Requires both pid and process_name for stale-PID recovery.")
     async def create_aob_pattern(

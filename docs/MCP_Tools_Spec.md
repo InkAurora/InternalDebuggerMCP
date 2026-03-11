@@ -14,7 +14,7 @@ If an auto-injecting tool targets a process whose debugger pipe is not yet reach
 - `write_memory(pid, process_name, address, bytes_hex=None, text=None, encoding="utf-8", zero_terminate=False, verify=True, dll_path=None)`
 - `dereference(pid, process_name, address, depth=3, pointer_size=8, dll_path=None)`
 - `list_modules(pid, process_name, dll_path=None)`
-- `pattern_scan(pid, process_name, pattern, start_address=None, region_size=None, limit=32, dll_path=None)`
+- `pattern_scan(pid, process_name, pattern, mask=None, target_offset=None, start_address=None, region_size=None, limit=32, dll_path=None)`
 - `create_aob_pattern(pid, process_name, address, max_bytes=64, include_mask=False, include_offset=False, dll_path=None)`
 - `watch_address(pid, process_name, address, size, interval_ms=250, watch_id=None, dll_path=None)`
 - `unwatch_address(pid, process_name, watch_id, dll_path=None)`
@@ -35,10 +35,14 @@ If an auto-injecting tool targets a process whose debugger pipe is not yet reach
 - Exact process-name fallback fails if zero or multiple matching processes are found.
 - `write_memory` accepts either `bytes_hex` or `text`; text payloads are encoded as `ascii`, `utf-8`, or `utf-16-le` before the native write.
 - Pattern strings accept wildcard bytes as `??`.
+- `pattern_scan` also accepts an optional `mask` string of `x` and `?` characters. The mask length must match the pattern byte count after tokenization.
+- `pattern_scan` may be called with both a wildcard AOB string and a `mask`, but the request is only valid if every `??` byte also maps to a `?` mask position.
+- When `target_offset` is supplied to `pattern_scan`, the returned `matches` point at the adjusted target address and the raw pattern-start anchors are returned separately as `match_starts`.
 - `create_aob_pattern` generates the shortest unique process-wide pattern it can find for the requested readable address, returning an x64dbg-style AOB string.
 - `create_aob_pattern` may start the pattern before the requested address. `pattern_start` identifies the scan anchor, and `target_offset` can be requested to point back to the original address.
 - `create_aob_pattern` optionally returns a per-byte mask string alongside the AOB when `include_mask=True`.
 - `create_aob_pattern` currently searches up to `128` bytes and defaults to `64` bytes when `max_bytes` is omitted.
+- `create_aob_pattern(..., include_mask=True, include_offset=True)` can be round-tripped directly into `pattern_scan` by passing the returned `pattern`, `mask`, and `target_offset` back to the scanner.
 - `dll_path` is optional and lets the caller override the default debugger DLL for that request.
 - `eject_debugger` does not auto-inject. It clears any tracked MCP session state for the PID and best-effort ejects the debugger DLL, preferring the live pipe path and falling back to `Injector.exe --eject` when the pipe is stale or already gone.
 - `list_modules` returns `enumeration_method="toolhelp_snapshot"` in addition to the module list.

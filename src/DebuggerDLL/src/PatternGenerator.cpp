@@ -70,7 +70,7 @@ bool PatternGenerator::Generate(
                 codeAware = BuildCodeAwarePattern(start, bytes);
             }
 
-            std::fill(bytes.begin(), bytes.end(), 0);
+            std::fill(bytes.begin(), bytes.end(), static_cast<std::uint8_t>(0));
 
             if (executable && CountWildcards(codeAware) > 0) {
                 if (IsUniqueCandidate(codeAware, start)) {
