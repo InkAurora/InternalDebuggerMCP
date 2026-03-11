@@ -16,6 +16,8 @@ namespace idmcp {
 inline constexpr std::size_t kMaxReadSize = 64 * 1024;
 inline constexpr std::size_t kMaxWriteSize = 64 * 1024;
 inline constexpr std::size_t kMaxPatternResults = 256;
+inline constexpr std::size_t kDefaultGeneratedPatternBytes = 64;
+inline constexpr std::size_t kMaxGeneratedPatternBytes = 128;
 inline constexpr std::size_t kMaxWatchCount = 64;
 inline constexpr std::size_t kDefaultPollLimit = 16;
 inline constexpr std::size_t kMaxAccessWatchCount = 4;

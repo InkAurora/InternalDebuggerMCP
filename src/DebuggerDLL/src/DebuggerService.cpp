@@ -353,7 +353,10 @@ DebuggerService& DebuggerService::Instance() {
 }
 
 DebuggerService::DebuggerService()
-    : patternScanner_(memoryReader_), watchManager_(memoryReader_), accessWatchManager_(memoryReader_, disassembler_) {}
+    : patternScanner_(memoryReader_),
+      watchManager_(memoryReader_),
+      patternGenerator_(memoryReader_, patternScanner_, disassembler_),
+      accessWatchManager_(memoryReader_, disassembler_) {}
 
 DebuggerService::~DebuggerService() = default;
 
@@ -487,6 +490,9 @@ std::string DebuggerService::Dispatch(const std::string& request) {
     }
     if (*command == "pattern_scan") {
         return HandlePatternScan(message);
+    }
+    if (*command == "create_aob_pattern") {
+        return HandleCreateAobPattern(message);
     }
     if (*command == "watch_address") {
         return HandleWatchAddress(message);
@@ -679,6 +685,39 @@ std::string DebuggerService::HandlePatternScan(const ParsedMessage& message) con
     for (const auto match : matches) {
         fields.emplace_back("match", ToHex(match));
     }
+    return MakeOk(std::move(fields));
+}
+
+std::string DebuggerService::HandleCreateAobPattern(const ParsedMessage& message) const {
+    const auto address = ParseAddress(message.GetFirst("address").value_or(""));
+    const auto maxBytes = ParseUnsigned(message.GetFirst("max_bytes").value_or(std::to_string(kDefaultGeneratedPatternBytes)));
+    const auto includeMask = ParseBool(message.GetFirst("include_mask").value_or("false")).value_or(false);
+    const auto includeOffset = ParseBool(message.GetFirst("include_offset").value_or("false")).value_or(false);
+    if (!address.has_value() || !maxBytes.has_value()) {
+        return MakeError("invalid_arguments", "address and max_bytes are required");
+    }
+
+    GeneratedPatternResult result{};
+    std::string error;
+    if (!patternGenerator_.Generate(*address, static_cast<std::size_t>(*maxBytes), result, error)) {
+        return MakeError(error, "unable to generate a unique AOB pattern");
+    }
+
+    std::vector<MessageField> fields{
+        {"address", ToHex(result.address)},
+        {"pattern", PatternGenerator::FormatPattern(result.pattern)},
+        {"pattern_start", ToHex(result.patternStart)},
+        {"match_count", std::to_string(result.matchCount)},
+        {"byte_count", std::to_string(result.pattern.size())},
+        {"wildcard_count", std::to_string(PatternGenerator::CountWildcards(result.pattern))},
+    };
+    if (includeMask) {
+        fields.emplace_back("mask", PatternGenerator::FormatMask(result.pattern));
+    }
+    if (includeOffset) {
+        fields.emplace_back("target_offset", std::to_string(result.targetOffset));
+    }
+
     return MakeOk(std::move(fields));
 }
 

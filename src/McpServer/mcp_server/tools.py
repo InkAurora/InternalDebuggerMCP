@@ -553,6 +553,40 @@ def create_mcp(session_manager: SessionManager) -> FastMCP:
             }
         )
 
+    @mcp.tool(description="Generate a process-wide unique x64dbg-style AOB pattern for a readable target address. The generated pattern may begin before the requested address and can optionally include a mask and target offset. Requires both pid and process_name for stale-PID recovery.")
+    async def create_aob_pattern(
+        pid: int,
+        process_name: str,
+        address: str,
+        max_bytes: int = 64,
+        include_mask: bool = False,
+        include_offset: bool = False,
+        dll_path: str | None = None,
+    ) -> StructuredToolResult:
+        fields = await request(
+            pid,
+            process_name,
+            "create_aob_pattern",
+            dll_path=dll_path,
+            address=address,
+            max_bytes=max_bytes,
+            include_mask=int(include_mask),
+            include_offset=int(include_offset),
+        )
+        payload: dict[str, Any] = {
+            "address": fields["address"][0],
+            "pattern": fields["pattern"][0],
+            "pattern_start": fields["pattern_start"][0],
+            "match_count": int(fields["match_count"][0]),
+            "byte_count": int(fields["byte_count"][0]),
+            "wildcard_count": int(fields["wildcard_count"][0]),
+        }
+        if "mask" in fields:
+            payload["mask"] = fields["mask"][0]
+        if "target_offset" in fields:
+            payload["target_offset"] = int(fields["target_offset"][0])
+        return _structured_result(payload)
+
     @mcp.tool(description="Start polling a target address for changes and create a watch that can be queried for change events. Requires both pid and process_name for stale-PID recovery.")
     async def watch_address(
         pid: int,

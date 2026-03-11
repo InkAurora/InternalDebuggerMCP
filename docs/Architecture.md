@@ -54,6 +54,7 @@ Repeated fields are allowed and used for list-like data such as modules, instruc
 - `dereference`
 - `list_modules`
 - `pattern_scan`
+- `create_aob_pattern`
 - `watch_address`
 - `unwatch_address`
 - `poll_watch_events`
@@ -71,6 +72,7 @@ Repeated fields are allowed and used for list-like data such as modules, instruc
 - writes are limited to committed writable pages and do not auto-change page protections;
 - dereference depth is limited;
 - pattern scans only walk committed readable regions;
+- generated AOB patterns are validated against committed readable regions and currently search up to 128 bytes per request;
 - function invocation is limited to the in-process x64 ABI and a bounded argument count;
 - watch count is capped;
 - page-guard-backed access watches are capped at 4 concurrently active watched addresses per process and only support 1, 2, 4, or 8 byte ranges;

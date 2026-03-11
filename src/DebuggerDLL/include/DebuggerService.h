@@ -13,6 +13,7 @@
 #include "Disassembler.h"
 #include "IpcServer.h"
 #include "MemoryReader.h"
+#include "PatternGenerator.h"
 #include "PatternScanner.h"
 #include "WatchManager.h"
 
@@ -43,6 +44,7 @@ private:
     [[nodiscard]] std::string HandleDereference(const ParsedMessage& message) const;
     [[nodiscard]] std::string HandleListModules() const;
     [[nodiscard]] std::string HandlePatternScan(const ParsedMessage& message) const;
+    [[nodiscard]] std::string HandleCreateAobPattern(const ParsedMessage& message) const;
     [[nodiscard]] std::string HandleWatchAddress(const ParsedMessage& message);
     [[nodiscard]] std::string HandleUnwatchAddress(const ParsedMessage& message);
     [[nodiscard]] std::string HandlePollWatchEvents(const ParsedMessage& message);
@@ -70,6 +72,7 @@ private:
     PatternScanner patternScanner_;
     WatchManager watchManager_;
     Disassembler disassembler_;
+    PatternGenerator patternGenerator_;
     AccessWatchManager accessWatchManager_;
     std::unique_ptr<IpcServer> ipcServer_;
 };
