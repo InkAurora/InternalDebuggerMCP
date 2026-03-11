@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import struct
 import subprocess
 import sys
 import tempfile
@@ -101,21 +102,27 @@ class TestAutoInjection(unittest.TestCase):
         fields = _prepare_invoke_fields(
             [
                 {"kind": "u64", "value": 7},
+                {"kind": "f32", "value": 1.25},
+                {"kind": "f64", "value": 2.5},
                 {"kind": "pointer", "value": "0x1234"},
                 {"kind": "string", "value": "Hi", "encoding": "utf-16-le"},
                 {"kind": "out_buffer", "size": 8},
             ]
         )
 
-        self.assertEqual(fields["arg_count"], 4)
+        self.assertEqual(fields["arg_count"], 6)
         self.assertEqual(fields["arg0_kind"], "u64")
         self.assertEqual(fields["arg0_value"], 7)
-        self.assertEqual(fields["arg1_kind"], "pointer")
-        self.assertEqual(fields["arg1_value"], "0x1234")
-        self.assertEqual(fields["arg2_kind"], "utf16")
-        self.assertEqual(fields["arg2_value"], "48 00 69 00 00 00")
-        self.assertEqual(fields["arg3_kind"], "out_buffer")
-        self.assertEqual(fields["arg3_size"], 8)
+        self.assertEqual(fields["arg1_kind"], "f32")
+        self.assertEqual(fields["arg1_value"], " ".join(f"{byte:02X}" for byte in struct.pack("<f", 1.25)))
+        self.assertEqual(fields["arg2_kind"], "f64")
+        self.assertEqual(fields["arg2_value"], " ".join(f"{byte:02X}" for byte in struct.pack("<d", 2.5)))
+        self.assertEqual(fields["arg3_kind"], "pointer")
+        self.assertEqual(fields["arg3_value"], "0x1234")
+        self.assertEqual(fields["arg4_kind"], "utf16")
+        self.assertEqual(fields["arg4_value"], "48 00 69 00 00 00")
+        self.assertEqual(fields["arg5_kind"], "out_buffer")
+        self.assertEqual(fields["arg5_size"], 8)
 
     def test_inject_debugger_uses_override_path(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

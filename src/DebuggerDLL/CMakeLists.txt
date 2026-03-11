@@ -8,6 +8,7 @@ set(DEBUGGER_DLL_SOURCES
     src/PatternScanner.cpp
     src/WatchManager.cpp
     src/Disassembler.cpp
+    src/InvokeCallBridge.asm
 )
 
 add_library(InternalDebuggerDLL SHARED ${DEBUGGER_DLL_SOURCES})

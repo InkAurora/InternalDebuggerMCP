@@ -1,13 +1,16 @@
 #include "DebuggerService.h"
 
+#include <bit>
 #include <Windows.h>
 #include <TlHelp32.h>
 
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cstddef>
 #include <cstring>
 #include <format>
+#include <limits>
 #include <optional>
 #include <sstream>
 #include <string_view>
@@ -25,11 +28,168 @@ struct ModuleRecord {
     std::string path;
 };
 
+enum class InvokeValueKind {
+    UInt64,
+    Float32,
+    Float64,
+};
+
+enum class InvokeReturnKind {
+    UInt64,
+    Float32,
+    Float64,
+};
+
 struct InvokeArgumentState {
-    std::uint64_t value{0};
+    InvokeValueKind invokeKind{InvokeValueKind::UInt64};
+    std::uint64_t bits{0};
     std::vector<std::uint8_t> storage;
     std::optional<std::pair<std::size_t, std::string>> output;
 };
+
+[[nodiscard]] std::optional<std::uint64_t> ParseInvokeScalarBits(
+    std::string_view text,
+    const std::size_t expectedBytes) {
+    std::vector<std::uint8_t> bytes;
+    if (!ParseHexBytes(text, bytes) || bytes.size() != expectedBytes) {
+        return std::nullopt;
+    }
+
+    std::uint64_t bits = 0;
+    for (std::size_t index = 0; index < bytes.size(); ++index) {
+        bits |= static_cast<std::uint64_t>(bytes[index]) << (index * 8U);
+    }
+    return bits;
+}
+
+[[nodiscard]] std::optional<InvokeReturnKind> ParseInvokeReturnKind(const ParsedMessage& message) {
+    const auto rawKind = message.GetFirst("return_kind").value_or("u64");
+    if (rawKind == "u64") {
+        return InvokeReturnKind::UInt64;
+    }
+    if (rawKind == "f32") {
+        return InvokeReturnKind::Float32;
+    }
+    if (rawKind == "f64") {
+        return InvokeReturnKind::Float64;
+    }
+    return std::nullopt;
+}
+
+template <typename T>
+[[nodiscard]] T DecodeInvokeScalar(const InvokeArgumentState& argument);
+
+template <>
+[[nodiscard]] std::uint64_t DecodeInvokeScalar<std::uint64_t>(const InvokeArgumentState& argument) {
+    return argument.bits;
+}
+
+template <>
+[[nodiscard]] float DecodeInvokeScalar<float>(const InvokeArgumentState& argument) {
+    return std::bit_cast<float>(static_cast<std::uint32_t>(argument.bits & 0xFFFFFFFFULL));
+}
+
+template <>
+[[nodiscard]] double DecodeInvokeScalar<double>(const InvokeArgumentState& argument) {
+    return std::bit_cast<double>(argument.bits);
+}
+
+template <typename T>
+[[nodiscard]] std::uint64_t EncodeInvokeReturnBits(T value);
+
+template <>
+[[nodiscard]] std::uint64_t EncodeInvokeReturnBits<std::uint64_t>(std::uint64_t value) {
+    return value;
+}
+
+template <>
+[[nodiscard]] std::uint64_t EncodeInvokeReturnBits<float>(float value) {
+    return static_cast<std::uint64_t>(std::bit_cast<std::uint32_t>(value));
+}
+
+template <>
+[[nodiscard]] std::uint64_t EncodeInvokeReturnBits<double>(double value) {
+    return std::bit_cast<std::uint64_t>(value);
+}
+
+[[nodiscard]] std::string FormatInvokeReturnValue(const InvokeReturnKind kind, const std::uint64_t bits) {
+    switch (kind) {
+    case InvokeReturnKind::UInt64:
+        return std::to_string(bits);
+    case InvokeReturnKind::Float32:
+        return std::format("{:.9g}", std::bit_cast<float>(static_cast<std::uint32_t>(bits & 0xFFFFFFFFULL)));
+    case InvokeReturnKind::Float64:
+        return std::format("{:.17g}", std::bit_cast<double>(bits));
+    }
+
+    return std::to_string(bits);
+}
+
+[[nodiscard]] std::string InvokeReturnKindToString(const InvokeReturnKind kind) {
+    switch (kind) {
+    case InvokeReturnKind::UInt64:
+        return "u64";
+    case InvokeReturnKind::Float32:
+        return "f32";
+    case InvokeReturnKind::Float64:
+        return "f64";
+    }
+
+    return "u64";
+}
+
+struct PreparedInvokeCall {
+    std::uintptr_t targetAddress{0};
+    std::array<std::uint64_t, 4> gprSlots{};
+    std::array<std::uint64_t, 4> xmmSlots{};
+    std::array<std::uint64_t, 2> stackSlots{};
+    std::uint64_t raxResult{0};
+    std::uint64_t xmm0Result{0};
+};
+
+static_assert(offsetof(PreparedInvokeCall, targetAddress) == 0x00);
+static_assert(offsetof(PreparedInvokeCall, gprSlots) == 0x08);
+static_assert(offsetof(PreparedInvokeCall, xmmSlots) == 0x28);
+static_assert(offsetof(PreparedInvokeCall, stackSlots) == 0x48);
+static_assert(offsetof(PreparedInvokeCall, raxResult) == 0x58);
+static_assert(offsetof(PreparedInvokeCall, xmm0Result) == 0x60);
+
+extern "C" void InvokeCallBridge(PreparedInvokeCall* preparedCall);
+
+[[nodiscard]] std::uint64_t EncodeInvokeSlotBits(const InvokeArgumentState& argument) {
+    switch (argument.invokeKind) {
+    case InvokeValueKind::UInt64:
+        return argument.bits;
+    case InvokeValueKind::Float32:
+        return argument.bits & 0xFFFFFFFFULL;
+    case InvokeValueKind::Float64:
+        return argument.bits;
+    }
+
+    return argument.bits;
+}
+
+void PrepareInvokeCall(
+    const std::uintptr_t address,
+    const std::vector<InvokeArgumentState>& arguments,
+    PreparedInvokeCall& prepared) {
+    prepared = {};
+    prepared.targetAddress = address;
+
+    for (std::size_t index = 0; index < arguments.size(); ++index) {
+        const auto slotBits = EncodeInvokeSlotBits(arguments[index]);
+        if (index < 4) {
+            if (arguments[index].invokeKind == InvokeValueKind::UInt64) {
+                prepared.gprSlots[index] = slotBits;
+            } else {
+                prepared.xmmSlots[index] = slotBits;
+            }
+            continue;
+        }
+
+        prepared.stackSlots[index - 4] = slotBits;
+    }
+}
 
 [[nodiscard]] std::string Join(const std::vector<std::string>& items, const std::string_view separator) {
     std::ostringstream stream;
@@ -240,14 +400,32 @@ struct InvokeArgumentState {
                 errorDetail = std::format("{} must be an unsigned integer", valueKey);
                 return false;
             }
-            state.value = *parsed;
+            state.invokeKind = InvokeValueKind::UInt64;
+            state.bits = *parsed;
+        } else if (*kind == "f32") {
+            const auto parsed = ParseInvokeScalarBits(message.GetFirst(valueKey).value_or(""), sizeof(float));
+            if (!parsed.has_value()) {
+                errorDetail = std::format("{} must contain 4 little-endian float bytes", valueKey);
+                return false;
+            }
+            state.invokeKind = InvokeValueKind::Float32;
+            state.bits = *parsed;
+        } else if (*kind == "f64") {
+            const auto parsed = ParseInvokeScalarBits(message.GetFirst(valueKey).value_or(""), sizeof(double));
+            if (!parsed.has_value()) {
+                errorDetail = std::format("{} must contain 8 little-endian float bytes", valueKey);
+                return false;
+            }
+            state.invokeKind = InvokeValueKind::Float64;
+            state.bits = *parsed;
         } else if (*kind == "pointer") {
             const auto parsed = ParseAddress(message.GetFirst(valueKey).value_or(""));
             if (!parsed.has_value()) {
                 errorDetail = std::format("{} must be a hexadecimal pointer", valueKey);
                 return false;
             }
-            state.value = static_cast<std::uint64_t>(*parsed);
+            state.invokeKind = InvokeValueKind::UInt64;
+            state.bits = static_cast<std::uint64_t>(*parsed);
         } else if (*kind == "bytes" || *kind == "utf8" || *kind == "utf16" || *kind == "inout_buffer") {
             if (!ParseHexBytes(message.GetFirst(valueKey).value_or(""), state.storage)) {
                 errorDetail = std::format("{} must contain space-separated hex bytes", valueKey);
@@ -258,7 +436,8 @@ struct InvokeArgumentState {
                 return false;
             }
 
-            state.value = reinterpret_cast<std::uint64_t>(state.storage.data());
+            state.invokeKind = InvokeValueKind::UInt64;
+            state.bits = reinterpret_cast<std::uint64_t>(state.storage.data());
             if (*kind == "inout_buffer") {
                 state.output = std::make_pair(index, *kind);
             }
@@ -272,7 +451,8 @@ struct InvokeArgumentState {
             }
 
             state.storage = std::vector<std::uint8_t>(static_cast<std::size_t>(*parsedSize), 0);
-            state.value = reinterpret_cast<std::uint64_t>(state.storage.data());
+            state.invokeKind = InvokeValueKind::UInt64;
+            state.bits = reinterpret_cast<std::uint64_t>(state.storage.data());
             state.output = std::make_pair(index, *kind);
         } else {
             errorDetail = std::format("unsupported argument kind: {}", *kind);
@@ -288,61 +468,39 @@ struct InvokeArgumentState {
 [[nodiscard]] bool InvokeFunction(
     const std::uintptr_t address,
     const std::vector<InvokeArgumentState>& arguments,
-    std::uint64_t& returnValue,
+    const InvokeReturnKind returnKind,
+    std::uint64_t& returnBits,
     DWORD& lastError,
     DWORD& exceptionCode) {
-    returnValue = 0;
+    PreparedInvokeCall prepared;
+    PrepareInvokeCall(address, arguments, prepared);
+
+    returnBits = 0;
     lastError = 0;
     exceptionCode = 0;
 
     SetLastError(ERROR_SUCCESS);
     __try {
-        switch (arguments.size()) {
-        case 0: {
-            using Fn = std::uint64_t(*)();
-            returnValue = reinterpret_cast<Fn>(address)();
-            break;
-        }
-        case 1: {
-            using Fn = std::uint64_t(*)(std::uint64_t);
-            returnValue = reinterpret_cast<Fn>(address)(arguments[0].value);
-            break;
-        }
-        case 2: {
-            using Fn = std::uint64_t(*)(std::uint64_t, std::uint64_t);
-            returnValue = reinterpret_cast<Fn>(address)(arguments[0].value, arguments[1].value);
-            break;
-        }
-        case 3: {
-            using Fn = std::uint64_t(*)(std::uint64_t, std::uint64_t, std::uint64_t);
-            returnValue = reinterpret_cast<Fn>(address)(arguments[0].value, arguments[1].value, arguments[2].value);
-            break;
-        }
-        case 4: {
-            using Fn = std::uint64_t(*)(std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t);
-            returnValue = reinterpret_cast<Fn>(address)(arguments[0].value, arguments[1].value, arguments[2].value, arguments[3].value);
-            break;
-        }
-        case 5: {
-            using Fn = std::uint64_t(*)(std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t);
-            returnValue = reinterpret_cast<Fn>(address)(arguments[0].value, arguments[1].value, arguments[2].value, arguments[3].value, arguments[4].value);
-            break;
-        }
-        case 6: {
-            using Fn = std::uint64_t(*)(std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t);
-            returnValue = reinterpret_cast<Fn>(address)(arguments[0].value, arguments[1].value, arguments[2].value, arguments[3].value, arguments[4].value, arguments[5].value);
-            break;
-        }
-        default:
-            return false;
-        }
+        InvokeCallBridge(&prepared);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         exceptionCode = GetExceptionCode();
         return false;
     }
 
     lastError = GetLastError();
-    return true;
+    switch (returnKind) {
+    case InvokeReturnKind::UInt64:
+        returnBits = prepared.raxResult;
+        return true;
+    case InvokeReturnKind::Float32:
+        returnBits = prepared.xmm0Result & 0xFFFFFFFFULL;
+        return true;
+    case InvokeReturnKind::Float64:
+        returnBits = prepared.xmm0Result;
+        return true;
+    }
+
+    return false;
 }
 
 [[nodiscard]] bool TryAddOffset(
@@ -948,15 +1106,20 @@ std::string DebuggerService::HandleInvokeFunction(const ParsedMessage& message) 
         return MakeError("invalid_arguments", errorDetail);
     }
 
+    const auto returnKind = ParseInvokeReturnKind(message);
+    if (!returnKind.has_value()) {
+        return MakeError("invalid_arguments", "return_kind must be one of: u64, f32, f64");
+    }
+
     std::vector<InvokeArgumentState> arguments;
     if (!ParseInvokeArguments(message, arguments, errorDetail)) {
         return MakeError("invalid_arguments", errorDetail);
     }
 
-    std::uint64_t returnValue = 0;
+    std::uint64_t returnBits = 0;
     DWORD lastError = 0;
     DWORD exceptionCode = 0;
-    if (!InvokeFunction(address, arguments, returnValue, lastError, exceptionCode)) {
+    if (!InvokeFunction(address, arguments, *returnKind, returnBits, lastError, exceptionCode)) {
         if (exceptionCode != 0) {
             return MakeError("invoke_exception", std::format("function raised exception 0x{:08X}", exceptionCode));
         }
@@ -965,7 +1128,9 @@ std::string DebuggerService::HandleInvokeFunction(const ParsedMessage& message) 
 
     std::vector<MessageField> fields{
         {"resolved_address", ToHex(address)},
-        {"return_value", std::to_string(returnValue)},
+        {"return_kind", InvokeReturnKindToString(*returnKind)},
+        {"return_bits", std::to_string(returnBits)},
+        {"return_value", FormatInvokeReturnValue(*returnKind, returnBits)},
         {"last_error", std::to_string(lastError)},
     };
 
@@ -979,7 +1144,7 @@ std::string DebuggerService::HandleInvokeFunction(const ParsedMessage& message) 
                 "{}|{}|{}|{}|{}",
                 argument.output->first,
                 argument.output->second,
-                ToHex(static_cast<std::uintptr_t>(argument.value)),
+                ToHex(static_cast<std::uintptr_t>(argument.bits)),
                 argument.storage.size(),
                 HexEncode(argument.storage)));
     }

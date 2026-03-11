@@ -74,7 +74,7 @@ Repeated fields are allowed and used for list-like data such as modules, instruc
 - pattern scans only walk committed readable regions;
 - `pattern_scan` can match either wildcard AOB text or exact bytes plus a separate mask, and offset-adjusted results are applied only after raw pattern starts are found;
 - generated AOB patterns are validated against committed readable regions and currently search up to 128 bytes per request;
-- function invocation is limited to the in-process x64 ABI and a bounded argument count;
+- function invocation is limited to the in-process x64 ABI, a bounded argument count, and scalar integer/pointer/buffer/`f32`/`f64` arguments plus scalar `u64`/`f32`/`f64` returns;
 - watch count is capped;
 - page-guard-backed access watches are capped at 4 concurrently active watched addresses per process and only support 1, 2, 4, or 8 byte ranges;
 - page-guard-backed access watches are aggregated by source instruction and expire after 60 seconds without a poll, returning one retained snapshot on the next poll before clearing it;

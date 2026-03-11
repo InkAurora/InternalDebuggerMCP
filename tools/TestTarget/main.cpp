@@ -42,6 +42,22 @@ extern "C" __declspec(dllexport) std::uint64_t ExportedStoreValue(std::uint64_t 
     return g_write_target;
 }
 
+extern "C" __declspec(dllexport) float ExportedAddFloat(float value) {
+    return value + 1.25f;
+}
+
+extern "C" __declspec(dllexport) double ExportedAddDouble(double value) {
+    return value + 2.5;
+}
+
+extern "C" __declspec(dllexport) double ExportedMixedMath(
+    std::uint64_t left,
+    double scale,
+    std::uint64_t right,
+    float bias) {
+    return (static_cast<double>(left + right) * scale) + static_cast<double>(bias);
+}
+
 __declspec(noinline) std::uint64_t TickReadWatchTarget() {
     const auto value = g_read_watch_target;
     g_read_watch_sink = value;
@@ -102,6 +118,9 @@ int main() {
     PrintAddress("SampleFunction", reinterpret_cast<void*>(&SampleFunction));
     PrintAddress("AobPatternAnchor", reinterpret_cast<void*>(&AobPatternAnchor));
     PrintAddress("ExportedStoreValue", reinterpret_cast<void*>(&ExportedStoreValue));
+    PrintAddress("ExportedAddFloat", reinterpret_cast<void*>(&ExportedAddFloat));
+    PrintAddress("ExportedAddDouble", reinterpret_cast<void*>(&ExportedAddDouble));
+    PrintAddress("ExportedMixedMath", reinterpret_cast<void*>(&ExportedMixedMath));
     PrintAddress("ExportedFillBuffer", reinterpret_cast<void*>(&ExportedFillBuffer));
     PrintAddress("TickReadWatchTarget", reinterpret_cast<void*>(&TickReadWatchTarget));
     PrintAddress("TickWriteWatchTarget", reinterpret_cast<void*>(&TickWriteWatchTarget));

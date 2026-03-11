@@ -24,7 +24,7 @@ If an auto-injecting tool targets a process whose debugger pipe is not yet reach
 - `poll_access_watch_results(pid, process_name, watch_id, dll_path=None)`
 - `unwatch_access_watch(pid, process_name, watch_id, dll_path=None)`
 - `disassemble(pid, process_name, address, size=64, max_instructions=16, dll_path=None)`
-- `invoke_function(pid, process_name, address=None, module=None, export=None, args=None, dll_path=None)`
+- `invoke_function(pid, process_name, address=None, module=None, export=None, args=None, return_kind="u64", dll_path=None)`
 - `registers(pid, process_name, dll_path=None)`
 
 ## Notes
@@ -53,7 +53,8 @@ If an auto-injecting tool targets a process whose debugger pipe is not yet reach
 - If a breakpoint-backed watch is not polled for more than 60 seconds, the native layer detaches it, keeps one retained snapshot in memory, and returns that retained snapshot on the next `poll_access_watch_results` call before clearing it.
 - `disassemble` reads bytes through the native transport and prefers Capstone in the Python MCP layer, falling back to the native decoder only when Capstone is unavailable.
 - `invoke_function` supports either a raw `address` or a loaded `module` plus `export`. The current implementation is Win64-only and supports up to 6 arguments.
-- `invoke_function` argument objects support the kinds `u64`, `pointer`, `bytes`, `string`, `utf8`, `utf16`, `inout_buffer`, and `out_buffer`.
+- `invoke_function` argument objects support the kinds `u64`, `f32`, `f64`, `pointer`, `bytes`, `string`, `utf8`, `utf16`, `inout_buffer`, and `out_buffer`.
+- `invoke_function` accepts `return_kind="u64" | "f32" | "f64"`. The native response always includes raw `return_bits`, and the MCP layer also exposes a decoded `return_value` using the requested return kind.
 - `registers` currently captures the server thread context inside the injected process and is intentionally limited.
 - Watch notifications are exposed as a polling tool in the first implementation batch; MCP push notifications can be added later.
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import csv
+import math
 import subprocess
 import sys
 import time
@@ -148,6 +149,22 @@ class McpStructuredToolResultsTest(unittest.IsolatedAsyncioTestCase):
                             ],
                         },
                     )
+                    float_invoke_result = await session.call_tool(
+                        "invoke_function",
+                        {
+                            "pid": target.pid,
+                            "process_name": TARGET_PROCESS_NAME,
+                            "module": "TestTarget.exe",
+                            "export": "ExportedMixedMath",
+                            "return_kind": "f64",
+                            "args": [
+                                {"kind": "u64", "value": 2},
+                                {"kind": "f64", "value": 1.5},
+                                {"kind": "u64", "value": 4},
+                                {"kind": "f32", "value": 0.25},
+                            ],
+                        },
+                    )
         finally:
             if target.poll() is None:
                 target.terminate()
@@ -172,6 +189,14 @@ class McpStructuredToolResultsTest(unittest.IsolatedAsyncioTestCase):
         assert invoke_result.structuredContent is not None
         self.assertEqual(invoke_result.structuredContent["return_value"], 4)
         self.assertEqual(invoke_result.structuredContent["outputs"][0]["bytes"], "30 31 32 33")
+
+        self.assertFalse(float_invoke_result.isError)
+        self.assertEqual(float_invoke_result.content, [])
+        self.assertIsNotNone(float_invoke_result.structuredContent)
+        assert float_invoke_result.structuredContent is not None
+        self.assertEqual(float_invoke_result.structuredContent["return_kind"], "f64")
+        self.assertTrue(math.isclose(float_invoke_result.structuredContent["return_value"], 9.25, rel_tol=1e-12))
+        self.assertIsInstance(float_invoke_result.structuredContent["return_bits"], int)
 
     async def test_eject_debugger_tool_and_server_shutdown_remove_the_debugger_dll(self) -> None:
         target_path = REPO_ROOT / "artifacts" / "Release" / "x64" / "TestTarget" / "TestTarget.exe"

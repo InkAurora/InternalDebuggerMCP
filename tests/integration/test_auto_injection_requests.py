@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import csv
+import math
 import re
+import struct
 import subprocess
 import sys
 import time
@@ -48,6 +50,9 @@ def _read_target_startup(process: subprocess.Popen[str]) -> dict[str, str]:
                 "SampleFunction",
                 "AobPatternAnchor",
                 "ExportedStoreValue",
+                "ExportedAddFloat",
+                "ExportedAddDouble",
+                "ExportedMixedMath",
                 "ExportedFillBuffer",
             }
             missing = required.difference(symbols)
@@ -232,6 +237,47 @@ class AutoInjectionRequestsTest(unittest.TestCase):
             arg2_kind="u64",
             arg2_value=0x20,
         )
+        float_fields = _send_native_request(
+            self.session_manager,
+            self.target_pid,
+            "invoke_function",
+            process_name=TARGET_PROCESS_NAME,
+            address=self.target_symbols["ExportedAddFloat"],
+            arg_count=1,
+            arg0_kind="f32",
+            arg0_value=" ".join(f"{byte:02X}" for byte in struct.pack("<f", 2.5)),
+            return_kind="f32",
+        )
+        double_fields = _send_native_request(
+            self.session_manager,
+            self.target_pid,
+            "invoke_function",
+            process_name=TARGET_PROCESS_NAME,
+            module="TestTarget.exe",
+            export="ExportedAddDouble",
+            arg_count=1,
+            arg0_kind="f64",
+            arg0_value=" ".join(f"{byte:02X}" for byte in struct.pack("<d", 4.5)),
+            return_kind="f64",
+        )
+        mixed_fields = _send_native_request(
+            self.session_manager,
+            self.target_pid,
+            "invoke_function",
+            process_name=TARGET_PROCESS_NAME,
+            module="TestTarget.exe",
+            export="ExportedMixedMath",
+            arg_count=4,
+            arg0_kind="u64",
+            arg0_value=2,
+            arg1_kind="f64",
+            arg1_value=" ".join(f"{byte:02X}" for byte in struct.pack("<d", 1.5)),
+            arg2_kind="u64",
+            arg2_value=4,
+            arg3_kind="f32",
+            arg3_value=" ".join(f"{byte:02X}" for byte in struct.pack("<f", 0.25)),
+            return_kind="f64",
+        )
 
         self.assertEqual(raw_fields["return_value"][0], "12")
         self.assertTrue(raw_fields["resolved_address"][0].startswith("0x"))
@@ -246,6 +292,31 @@ class AutoInjectionRequestsTest(unittest.TestCase):
         self.assertTrue(output_address.startswith("0x"))
         self.assertEqual(output_size, "8")
         self.assertEqual(output_bytes, "20 21 22 23 24 25 26 27")
+
+        self.assertEqual(float_fields["return_kind"][0], "f32")
+        self.assertTrue(
+            math.isclose(
+                struct.unpack("<f", struct.pack("<I", int(float_fields["return_bits"][0])))[0],
+                3.75,
+                rel_tol=1e-6,
+            )
+        )
+        self.assertEqual(double_fields["return_kind"][0], "f64")
+        self.assertTrue(
+            math.isclose(
+                struct.unpack("<d", struct.pack("<Q", int(double_fields["return_bits"][0])))[0],
+                7.0,
+                rel_tol=1e-12,
+            )
+        )
+        self.assertEqual(mixed_fields["return_kind"][0], "f64")
+        self.assertTrue(
+            math.isclose(
+                struct.unpack("<d", struct.pack("<Q", int(mixed_fields["return_bits"][0])))[0],
+                9.25,
+                rel_tol=1e-12,
+            )
+        )
 
     def test_eject_command_removes_debugger_and_allows_reinject(self) -> None:
         ping_fields = _send_native_request(self.session_manager, self.target_pid, "ping", process_name=TARGET_PROCESS_NAME)

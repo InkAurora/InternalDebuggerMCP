@@ -133,7 +133,7 @@ Run the Windows burst-request regression test after building the solution.
 - The injected DLL is x64-only in the current implementation.
 - PID-based MCP tools auto-inject by default with the packaged or repository-resolved `InternalDebuggerDLL.dll`; pass a custom `dll_path` only when you need a non-default build.
 - `write_memory` only writes to already writable committed pages and enforces payload size caps.
-- `invoke_function` is intentionally scoped to up to 6 Win64 arguments and supports integer, pointer, encoded string, and bounded buffer marshaling.
+- `invoke_function` is intentionally scoped to up to 6 Win64 arguments and supports integer, pointer, encoded string, bounded buffer, `f32`, and `f64` marshaling, with explicit floating return decoding via `return_kind`.
 - The native pipe server now accepts bursts of clients and serializes execution internally, which avoids the connection contention seen in the first implementation.
 
 ## Current status

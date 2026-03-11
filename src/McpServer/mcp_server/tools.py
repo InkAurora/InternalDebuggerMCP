@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import csv
+import struct
 import subprocess
 from typing import Annotated, Any
 
@@ -87,6 +88,39 @@ def _coerce_unsigned(value: Any, *, field_name: str) -> int:
     return parsed
 
 
+def _encode_float_payload(value: Any, *, field_name: str, kind: str) -> str:
+    if isinstance(value, bool):
+        raise ValueError(f"{field_name} must be a floating-point number")
+
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{field_name} must be a floating-point number") from error
+
+    format_code = "<f" if kind == "f32" else "<d"
+    try:
+        return _hex_encode(struct.pack(format_code, parsed))
+    except OverflowError as error:
+        raise ValueError(f"{field_name} is out of range for {kind}") from error
+
+
+def _normalize_invoke_return_kind(value: str | None) -> str:
+    normalized = str(value or "u64").strip().lower()
+    if normalized not in {"u64", "f32", "f64"}:
+        raise ValueError("return_kind must be one of: u64, f32, f64")
+    return normalized
+
+
+def _decode_invoke_return(return_kind: str, return_bits: int) -> int | float:
+    if return_kind == "u64":
+        return return_bits
+    if return_kind == "f32":
+        payload = struct.pack("<I", return_bits & 0xFFFFFFFF)
+        return struct.unpack("<f", payload)[0]
+    payload = struct.pack("<Q", return_bits & 0xFFFFFFFFFFFFFFFF)
+    return struct.unpack("<d", payload)[0]
+
+
 def _prepare_invoke_fields(args: list[dict[str, Any]] | None) -> dict[str, Any]:
     native_fields: dict[str, Any] = {"arg_count": 0}
     if not args:
@@ -109,6 +143,11 @@ def _prepare_invoke_fields(args: list[dict[str, Any]] | None) -> dict[str, Any]:
         if raw_kind == "u64":
             native_fields[kind_key] = "u64"
             native_fields[value_key] = _coerce_unsigned(arg.get("value"), field_name=f"args[{index}].value")
+        elif raw_kind in {"f32", "f64"}:
+            native_fields[kind_key] = raw_kind
+            native_fields[value_key] = _encode_float_payload(
+                arg.get("value"), field_name=f"args[{index}].value", kind=raw_kind
+            )
         elif raw_kind == "pointer":
             value = arg.get("value")
             if isinstance(value, int):
@@ -132,7 +171,7 @@ def _prepare_invoke_fields(args: list[dict[str, Any]] | None) -> dict[str, Any]:
             native_fields[size_key] = _coerce_unsigned(arg.get("size"), field_name=f"args[{index}].size")
         else:
             raise ValueError(
-                f"unsupported argument kind {raw_kind!r}; expected u64, pointer, bytes, string, utf8, utf16, inout_buffer, or out_buffer"
+                f"unsupported argument kind {raw_kind!r}; expected u64, f32, f64, pointer, bytes, string, utf8, utf16, inout_buffer, or out_buffer"
             )
 
     return native_fields
@@ -818,21 +857,27 @@ def create_mcp(session_manager: SessionManager) -> FastMCP:
         module: str | None = None,
         export: str | None = None,
         args: list[dict[str, Any]] | None = None,
+        return_kind: str = "u64",
         dll_path: str | None = None,
     ) -> StructuredToolResult:
         if address is None and (module is None or export is None):
             raise ValueError("provide either address or module plus export")
         native_fields = _prepare_invoke_fields(args)
+        native_fields["return_kind"] = _normalize_invoke_return_kind(return_kind)
         if address is not None:
             native_fields["address"] = address
         else:
             native_fields["module"] = module
             native_fields["export"] = export
         fields = await request(pid, process_name, "invoke_function", dll_path=dll_path, **native_fields)
+        response_return_kind = _normalize_invoke_return_kind(fields.get("return_kind", [return_kind])[0])
+        return_bits = int(fields.get("return_bits", fields["return_value"])[0])
         return _structured_result(
             {
                 "resolved_address": fields["resolved_address"][0],
-                "return_value": int(fields["return_value"][0]),
+                "return_kind": response_return_kind,
+                "return_bits": return_bits,
+                "return_value": _decode_invoke_return(response_return_kind, return_bits),
                 "last_error": int(fields["last_error"][0]),
                 "outputs": _parse_invoke_outputs(fields),
             }
