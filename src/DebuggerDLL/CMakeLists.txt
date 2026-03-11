@@ -1,4 +1,5 @@
 set(DEBUGGER_DLL_SOURCES
+    src/AccessWatchManager.cpp
     src/dllmain.cpp
     src/DebuggerService.cpp
     src/IpcServer.cpp

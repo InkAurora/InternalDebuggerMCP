@@ -605,6 +605,128 @@ def create_mcp(session_manager: SessionManager) -> FastMCP:
             )
         return _structured_result({"event_count": int(fields["event_count"][0]), "events": events})
 
+    @mcp.tool(description="Install a breakpoint-backed read watch for a small memory range and aggregate hits by source instruction. Requires both pid and process_name for stale-PID recovery.")
+    async def watch_memory_reads(
+        pid: int,
+        process_name: str,
+        address: str,
+        size: int,
+        watch_id: str | None = None,
+        dll_path: str | None = None,
+    ) -> StructuredToolResult:
+        fields = await request(
+            pid,
+            process_name,
+            "watch_memory_reads",
+            dll_path=dll_path,
+            address=address,
+            size=size,
+            watch_id=watch_id,
+        )
+        return _structured_result(
+            {
+                "watch_id": fields["watch_id"][0],
+                "address": fields["address"][0],
+                "size": int(fields["size"][0]),
+                "mode": fields["mode"][0],
+                "idle_timeout_s": int(fields["idle_timeout_s"][0]),
+                "state": fields["state"][0],
+            }
+        )
+
+    @mcp.tool(description="Install a breakpoint-backed write watch for a small memory range and aggregate hits by source instruction. Requires both pid and process_name for stale-PID recovery.")
+    async def watch_memory_writes(
+        pid: int,
+        process_name: str,
+        address: str,
+        size: int,
+        watch_id: str | None = None,
+        dll_path: str | None = None,
+    ) -> StructuredToolResult:
+        fields = await request(
+            pid,
+            process_name,
+            "watch_memory_writes",
+            dll_path=dll_path,
+            address=address,
+            size=size,
+            watch_id=watch_id,
+        )
+        return _structured_result(
+            {
+                "watch_id": fields["watch_id"][0],
+                "address": fields["address"][0],
+                "size": int(fields["size"][0]),
+                "mode": fields["mode"][0],
+                "idle_timeout_s": int(fields["idle_timeout_s"][0]),
+                "state": fields["state"][0],
+            }
+        )
+
+    @mcp.tool(description="Poll aggregated source hits for a breakpoint-backed access watch. If the watch idled for more than 60 seconds, the native layer detaches it and returns the retained snapshot once. Requires both pid and process_name for stale-PID recovery.")
+    async def poll_access_watch_results(
+        pid: int,
+        process_name: str,
+        watch_id: str,
+        dll_path: str | None = None,
+    ) -> StructuredToolResult:
+        fields = await request(
+            pid,
+            process_name,
+            "poll_access_watch_results",
+            dll_path=dll_path,
+            watch_id=watch_id,
+        )
+        sources = []
+        for source in _split_records(fields.get("source", []), 6):
+            if len(source) != 6:
+                continue
+            instruction_address, instruction_bytes, instruction, hit_count, last_thread_id, last_access_address = source
+            sources.append(
+                {
+                    "instruction_address": instruction_address,
+                    "instruction_bytes": instruction_bytes,
+                    "instruction": instruction,
+                    "hit_count": int(hit_count),
+                    "last_thread_id": int(last_thread_id),
+                    "last_access_address": last_access_address,
+                }
+            )
+        return _structured_result(
+            {
+                "watch_id": fields["watch_id"][0],
+                "mode": fields["mode"][0],
+                "address": fields["address"][0],
+                "size": int(fields["size"][0]),
+                "state": fields["state"][0],
+                "timed_out": fields["timed_out"][0].lower() == "true",
+                "total_hit_count": int(fields["total_hit_count"][0]),
+                "source_count": int(fields["source_count"][0]),
+                "sources": sources,
+            }
+        )
+
+    @mcp.tool(description="Detach a breakpoint-backed access watch or clear its retained timeout snapshot by watch identifier. Requires both pid and process_name for stale-PID recovery.")
+    async def unwatch_access_watch(
+        pid: int,
+        process_name: str,
+        watch_id: str,
+        dll_path: str | None = None,
+    ) -> StructuredToolResult:
+        fields = await request(
+            pid,
+            process_name,
+            "unwatch_access_watch",
+            dll_path=dll_path,
+            watch_id=watch_id,
+        )
+        return _structured_result(
+            {
+                "watch_id": fields["watch_id"][0],
+                "removed": fields["removed"][0].lower() == "true",
+            }
+        )
+
     @mcp.tool(description="Disassemble a byte range from the target process into lightweight native instruction records. Requires both pid and process_name for stale-PID recovery.")
     async def disassemble(
         pid: int,

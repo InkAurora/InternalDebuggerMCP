@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "AccessWatchManager.h"
 #include "DebuggerProtocol.h"
 #include "Disassembler.h"
 #include "IpcServer.h"
@@ -45,6 +46,10 @@ private:
     [[nodiscard]] std::string HandleWatchAddress(const ParsedMessage& message);
     [[nodiscard]] std::string HandleUnwatchAddress(const ParsedMessage& message);
     [[nodiscard]] std::string HandlePollWatchEvents(const ParsedMessage& message);
+    [[nodiscard]] std::string HandleWatchMemoryReads(const ParsedMessage& message);
+    [[nodiscard]] std::string HandleWatchMemoryWrites(const ParsedMessage& message);
+    [[nodiscard]] std::string HandleUnwatchAccessWatch(const ParsedMessage& message);
+    [[nodiscard]] std::string HandlePollAccessWatchResults(const ParsedMessage& message);
     [[nodiscard]] std::string HandleDisassemble(const ParsedMessage& message) const;
     [[nodiscard]] std::string HandleInvokeFunction(const ParsedMessage& message) const;
     [[nodiscard]] std::string HandleRegisters() const;
@@ -65,6 +70,7 @@ private:
     PatternScanner patternScanner_;
     WatchManager watchManager_;
     Disassembler disassembler_;
+    AccessWatchManager accessWatchManager_;
     std::unique_ptr<IpcServer> ipcServer_;
 };
 

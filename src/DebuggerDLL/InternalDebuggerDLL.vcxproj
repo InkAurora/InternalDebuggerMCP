@@ -88,6 +88,7 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="include\AccessWatchManager.h" />
     <ClInclude Include="include\DebuggerProtocol.h" />
     <ClInclude Include="include\DebuggerService.h" />
     <ClInclude Include="include\Disassembler.h" />
@@ -97,6 +98,7 @@
     <ClInclude Include="include\WatchManager.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="src\AccessWatchManager.cpp" />
     <ClCompile Include="src\DebuggerService.cpp" />
     <ClCompile Include="src\Disassembler.cpp" />
     <ClCompile Include="src\dllmain.cpp" />

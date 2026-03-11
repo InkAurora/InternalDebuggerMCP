@@ -38,7 +38,14 @@ def _read_target_startup(process: subprocess.Popen[str]) -> dict[str, str]:
 
         text = line.strip()
         if text == "READY":
-            required = {"g_write_target", "SampleFunction", "ExportedStoreValue", "ExportedFillBuffer"}
+            required = {
+                "g_write_target",
+                "g_read_watch_target",
+                "g_write_watch_target",
+                "SampleFunction",
+                "ExportedStoreValue",
+                "ExportedFillBuffer",
+            }
             missing = required.difference(symbols)
             if missing:
                 raise AssertionError(f"Missing startup symbols: {', '.join(sorted(missing))}")
@@ -258,6 +265,78 @@ class AutoInjectionRequestsTest(unittest.TestCase):
         )
         self.assertEqual(reinjected_fields["pid"][0], str(self.target_pid))
         self.assertTrue(_wait_for_module_state(self.target_pid, DEBUGGER_DLL_NAME, loaded=True))
+
+    def test_access_watch_commands_aggregate_read_and_write_hits(self) -> None:
+        read_watch = _send_native_request(
+            self.session_manager,
+            self.target_pid,
+            "watch_memory_reads",
+            process_name=TARGET_PROCESS_NAME,
+            address=self.target_symbols["g_read_watch_target"],
+            size=8,
+            watch_id="read_watch_test",
+        )
+        write_watch = _send_native_request(
+            self.session_manager,
+            self.target_pid,
+            "watch_memory_writes",
+            process_name=TARGET_PROCESS_NAME,
+            address=self.target_symbols["g_write_watch_target"],
+            size=8,
+            watch_id="write_watch_test",
+        )
+
+        try:
+            time.sleep(0.5)
+
+            read_results = _send_native_request(
+                self.session_manager,
+                self.target_pid,
+                "poll_access_watch_results",
+                process_name=TARGET_PROCESS_NAME,
+                watch_id=read_watch["watch_id"][0],
+            )
+            write_results = _send_native_request(
+                self.session_manager,
+                self.target_pid,
+                "poll_access_watch_results",
+                process_name=TARGET_PROCESS_NAME,
+                watch_id=write_watch["watch_id"][0],
+            )
+        finally:
+            _send_native_request(
+                self.session_manager,
+                self.target_pid,
+                "unwatch_access_watch",
+                process_name=TARGET_PROCESS_NAME,
+                watch_id="read_watch_test",
+            )
+            _send_native_request(
+                self.session_manager,
+                self.target_pid,
+                "unwatch_access_watch",
+                process_name=TARGET_PROCESS_NAME,
+                watch_id="write_watch_test",
+            )
+
+        self.assertEqual(read_results["mode"][0], "read")
+        self.assertEqual(read_results["state"][0], "active")
+        self.assertEqual(read_results["timed_out"][0], "false")
+        self.assertGreater(int(read_results["total_hit_count"][0]), 0)
+        self.assertGreaterEqual(int(read_results["source_count"][0]), 1)
+
+        self.assertEqual(write_results["mode"][0], "write")
+        self.assertEqual(write_results["state"][0], "active")
+        self.assertEqual(write_results["timed_out"][0], "false")
+        self.assertGreater(int(write_results["total_hit_count"][0]), 0)
+        self.assertGreaterEqual(int(write_results["source_count"][0]), 1)
+
+        read_source = read_results["source"][0].split("|", 5)
+        write_source = write_results["source"][0].split("|", 5)
+        self.assertEqual(read_source[-1].lower(), self.target_symbols["g_read_watch_target"].lower())
+        self.assertEqual(write_source[-1].lower(), self.target_symbols["g_write_watch_target"].lower())
+        self.assertIn("mov", read_source[2].lower())
+        self.assertIn("mov", write_source[2].lower())
 
 
 class NameFallbackAutoInjectionRequestsTest(unittest.TestCase):

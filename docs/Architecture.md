@@ -6,7 +6,8 @@
    - injected into the target process;
    - starts a worker thread outside `DllMain`;
    - hosts a named-pipe server at `\\.\pipe\InternalDebuggerMCP_<pid>`;
-   - exposes bounded inspection and mutation commands.
+   - exposes bounded inspection and mutation commands;
+   - hosts both the existing polling watch manager and a page-guard-backed access watch manager.
 
 2. Python MCP server
    - runs over stdio using the MCP Python SDK;
@@ -56,6 +57,10 @@ Repeated fields are allowed and used for list-like data such as modules, instruc
 - `watch_address`
 - `unwatch_address`
 - `poll_watch_events`
+- `watch_memory_reads`
+- `watch_memory_writes`
+- `poll_access_watch_results`
+- `unwatch_access_watch`
 - `disassemble`
 - `invoke_function`
 - `registers`
@@ -68,5 +73,7 @@ Repeated fields are allowed and used for list-like data such as modules, instruc
 - pattern scans only walk committed readable regions;
 - function invocation is limited to the in-process x64 ABI and a bounded argument count;
 - watch count is capped;
+- page-guard-backed access watches are capped at 4 concurrently active watched addresses per process and only support 1, 2, 4, or 8 byte ranges;
+- page-guard-backed access watches are aggregated by source instruction and expire after 60 seconds without a poll, returning one retained snapshot on the next poll before clearing it;
 - explicit unload is scheduled from a dedicated worker thread so the DLL does not tear itself down from the pipe handler thread;
 - address validation relies on `VirtualQuery` before dereference.

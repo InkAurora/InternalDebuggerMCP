@@ -353,7 +353,7 @@ DebuggerService& DebuggerService::Instance() {
 }
 
 DebuggerService::DebuggerService()
-    : patternScanner_(memoryReader_), watchManager_(memoryReader_) {}
+    : patternScanner_(memoryReader_), watchManager_(memoryReader_), accessWatchManager_(memoryReader_, disassembler_) {}
 
 DebuggerService::~DebuggerService() = default;
 
@@ -384,6 +384,7 @@ void DebuggerService::Stop() {
         ipcServer_->Stop();
         ipcServer_.reset();
     }
+    accessWatchManager_.Stop();
     watchManager_.Stop();
 
     if (bootstrapThread_ != nullptr) {
@@ -434,8 +435,10 @@ DWORD WINAPI DebuggerService::UnloadThreadProc(LPVOID context) {
 }
 
 void DebuggerService::Bootstrap() {
+    AccessWatchManager::ScopedInternalContext accessWatchInternal(accessWatchManager_);
     pipeName_ = std::format("{}{}", kPipePrefix, GetCurrentProcessId());
     watchManager_.Start();
+    accessWatchManager_.Start();
     ipcServer_ = std::make_unique<IpcServer>(pipeName_, [this](const std::string& request) {
         return Dispatch(request);
     });
@@ -448,6 +451,7 @@ void DebuggerService::Bootstrap() {
 }
 
 void DebuggerService::RunExplicitUnload() {
+    AccessWatchManager::ScopedInternalContext accessWatchInternal(accessWatchManager_);
     const HMODULE moduleHandle = moduleHandle_;
     Stop();
     if (moduleHandle != nullptr) {
@@ -456,6 +460,7 @@ void DebuggerService::RunExplicitUnload() {
 }
 
 std::string DebuggerService::Dispatch(const std::string& request) {
+    AccessWatchManager::ScopedInternalContext accessWatchInternal(accessWatchManager_);
     const auto message = ParseMessage(request);
     const auto command = message.GetFirst("command");
     if (!command.has_value()) {
@@ -491,6 +496,18 @@ std::string DebuggerService::Dispatch(const std::string& request) {
     }
     if (*command == "poll_watch_events") {
         return HandlePollWatchEvents(message);
+    }
+    if (*command == "watch_memory_reads") {
+        return HandleWatchMemoryReads(message);
+    }
+    if (*command == "watch_memory_writes") {
+        return HandleWatchMemoryWrites(message);
+    }
+    if (*command == "unwatch_access_watch") {
+        return HandleUnwatchAccessWatch(message);
+    }
+    if (*command == "poll_access_watch_results") {
+        return HandlePollAccessWatchResults(message);
     }
     if (*command == "disassemble") {
         return HandleDisassemble(message);
@@ -719,6 +736,109 @@ std::string DebuggerService::HandlePollWatchEvents(const ParsedMessage& message)
                 HexOrEmpty(event.newValue),
                 event.timestampMs));
     }
+    return MakeOk(std::move(fields));
+}
+
+std::string DebuggerService::HandleWatchMemoryReads(const ParsedMessage& message) {
+    const auto address = ParseAddress(message.GetFirst("address").value_or(""));
+    const auto size = ParseUnsigned(message.GetFirst("size").value_or(""));
+    if (!address.has_value() || !size.has_value()) {
+        return MakeError("invalid_arguments", "address and size are required");
+    }
+
+    const auto providedId = message.GetFirst("watch_id");
+    const auto watchId = providedId.value_or(MakeWatchId(*address));
+    std::string error;
+    if (!accessWatchManager_.AddWatch(watchId, *address, static_cast<std::size_t>(*size), AccessWatchMode::Read, error)) {
+        return MakeError(error, "unable to arm read watch");
+    }
+
+    return MakeOk({
+        {"watch_id", watchId},
+        {"address", ToHex(*address)},
+        {"size", std::to_string(*size)},
+        {"mode", "read"},
+        {"idle_timeout_s", std::to_string(kAccessWatchIdleTimeoutMs / 1000)},
+        {"state", "active"},
+    });
+}
+
+std::string DebuggerService::HandleWatchMemoryWrites(const ParsedMessage& message) {
+    const auto address = ParseAddress(message.GetFirst("address").value_or(""));
+    const auto size = ParseUnsigned(message.GetFirst("size").value_or(""));
+    if (!address.has_value() || !size.has_value()) {
+        return MakeError("invalid_arguments", "address and size are required");
+    }
+
+    const auto providedId = message.GetFirst("watch_id");
+    const auto watchId = providedId.value_or(MakeWatchId(*address));
+    std::string error;
+    if (!accessWatchManager_.AddWatch(watchId, *address, static_cast<std::size_t>(*size), AccessWatchMode::Write, error)) {
+        return MakeError(error, "unable to arm write watch");
+    }
+
+    return MakeOk({
+        {"watch_id", watchId},
+        {"address", ToHex(*address)},
+        {"size", std::to_string(*size)},
+        {"mode", "write"},
+        {"idle_timeout_s", std::to_string(kAccessWatchIdleTimeoutMs / 1000)},
+        {"state", "active"},
+    });
+}
+
+std::string DebuggerService::HandleUnwatchAccessWatch(const ParsedMessage& message) {
+    const auto watchId = message.GetFirst("watch_id");
+    if (!watchId.has_value()) {
+        return MakeError("invalid_arguments", "watch_id is required");
+    }
+
+    std::string error;
+    if (!accessWatchManager_.RemoveWatch(*watchId, error)) {
+        return MakeError(error, *watchId);
+    }
+
+    return MakeOk({
+        {"watch_id", *watchId},
+        {"removed", "true"},
+    });
+}
+
+std::string DebuggerService::HandlePollAccessWatchResults(const ParsedMessage& message) {
+    const auto watchId = message.GetFirst("watch_id");
+    if (!watchId.has_value()) {
+        return MakeError("invalid_arguments", "watch_id is required");
+    }
+
+    std::string error;
+    const auto result = accessWatchManager_.PollResults(*watchId, error);
+    if (!result.has_value()) {
+        return MakeError(error, *watchId);
+    }
+
+    std::vector<MessageField> fields{
+        {"watch_id", result->watchId},
+        {"mode", result->mode == AccessWatchMode::Read ? "read" : "write"},
+        {"address", ToHex(result->address)},
+        {"size", std::to_string(result->size)},
+        {"state", result->active ? "active" : "expired_snapshot"},
+        {"timed_out", result->timedOut ? "true" : "false"},
+        {"total_hit_count", std::to_string(result->totalHitCount)},
+        {"source_count", std::to_string(result->sources.size())},
+    };
+    for (const auto& source : result->sources) {
+        fields.emplace_back(
+            "source",
+            std::format(
+                "{}|{}|{}|{}|{}|{}",
+                ToHex(source.instructionAddress),
+                HexEncode(source.instructionBytes),
+                source.instructionText,
+                source.hitCount,
+                source.lastThreadId,
+                ToHex(source.lastAccessAddress)));
+    }
+
     return MakeOk(std::move(fields));
 }
 

@@ -18,6 +18,10 @@ If an auto-injecting tool targets a process whose debugger pipe is not yet reach
 - `watch_address(pid, process_name, address, size, interval_ms=250, watch_id=None, dll_path=None)`
 - `unwatch_address(pid, process_name, watch_id, dll_path=None)`
 - `poll_watch_events(pid, process_name, limit=16, dll_path=None)`
+- `watch_memory_reads(pid, process_name, address, size, watch_id=None, dll_path=None)`
+- `watch_memory_writes(pid, process_name, address, size, watch_id=None, dll_path=None)`
+- `poll_access_watch_results(pid, process_name, watch_id, dll_path=None)`
+- `unwatch_access_watch(pid, process_name, watch_id, dll_path=None)`
 - `disassemble(pid, process_name, address, size=64, max_instructions=16, dll_path=None)`
 - `invoke_function(pid, process_name, address=None, module=None, export=None, args=None, dll_path=None)`
 - `registers(pid, process_name, dll_path=None)`
@@ -33,6 +37,11 @@ If an auto-injecting tool targets a process whose debugger pipe is not yet reach
 - `dll_path` is optional and lets the caller override the default debugger DLL for that request.
 - `eject_debugger` does not auto-inject. It clears any tracked MCP session state for the PID and best-effort ejects the debugger DLL, preferring the live pipe path and falling back to `Injector.exe --eject` when the pipe is stale or already gone.
 - `list_modules` returns `enumeration_method="toolhelp_snapshot"` in addition to the module list.
+- `watch_memory_reads` and `watch_memory_writes` are separate access-watch tools that aggregate hits by source instruction rather than returning a raw event stream.
+- Access watches currently support at most 4 concurrent active watched addresses per process and only sizes `1`, `2`, `4`, or `8` bytes.
+- Access watches use guarded pages in the injected process. The native exception record provides the accessed address plus the read or write access type used for tool-specific filtering.
+- `poll_access_watch_results` returns cumulative source summaries for the specified watch id. Each source record includes the instruction address, instruction bytes, formatted instruction text, hit count, last thread id, and last accessed address.
+- If a breakpoint-backed watch is not polled for more than 60 seconds, the native layer detaches it, keeps one retained snapshot in memory, and returns that retained snapshot on the next `poll_access_watch_results` call before clearing it.
 - `disassemble` reads bytes through the native transport and prefers Capstone in the Python MCP layer, falling back to the native decoder only when Capstone is unavailable.
 - `invoke_function` supports either a raw `address` or a loaded `module` plus `export`. The current implementation is Win64-only and supports up to 6 arguments.
 - `invoke_function` argument objects support the kinds `u64`, `pointer`, `bytes`, `string`, `utf8`, `utf16`, `inout_buffer`, and `out_buffer`.

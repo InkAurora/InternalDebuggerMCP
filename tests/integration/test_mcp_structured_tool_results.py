@@ -35,7 +35,7 @@ def _read_target_startup(process) -> dict[str, str]:
 
         text = line.strip()
         if text == "READY":
-            required = {"g_write_target"}
+            required = {"g_write_target", "g_read_watch_target", "g_write_watch_target"}
             missing = required.difference(symbols)
             if missing:
                 raise AssertionError(f"Missing startup symbols: {', '.join(sorted(missing))}")
@@ -236,6 +236,122 @@ class McpStructuredToolResultsTest(unittest.IsolatedAsyncioTestCase):
                     target.wait(timeout=5)
             if target.stdout is not None:
                 target.stdout.close()
+
+    async def test_access_watch_tools_return_structured_source_aggregates(self) -> None:
+        target_path = REPO_ROOT / "artifacts" / "Release" / "x64" / "TestTarget" / "TestTarget.exe"
+        if not target_path.exists():
+            raise unittest.SkipTest(f"Missing build artifact: {target_path}")
+
+        target = subprocess.Popen(
+            [str(target_path)],
+            cwd=REPO_ROOT,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            bufsize=1,
+        )
+        assert target.stdout is not None
+        symbols = _read_target_startup(target)
+
+        server = StdioServerParameters(
+            command=sys.executable,
+            args=[str(MCP_SRC / "launch.py")],
+            cwd=str(MCP_SRC),
+            env={"PYTHONUTF8": "1", "PYTHONUNBUFFERED": "1"},
+        )
+
+        try:
+            async with stdio_client(server) as (read_stream, write_stream):
+                async with ClientSession(read_stream, write_stream) as session:
+                    await session.initialize()
+                    read_watch = await session.call_tool(
+                        "watch_memory_reads",
+                        {
+                            "pid": target.pid,
+                            "process_name": TARGET_PROCESS_NAME,
+                            "address": symbols["g_read_watch_target"],
+                            "size": 8,
+                            "watch_id": "structured_read_watch",
+                        },
+                    )
+                    write_watch = await session.call_tool(
+                        "watch_memory_writes",
+                        {
+                            "pid": target.pid,
+                            "process_name": TARGET_PROCESS_NAME,
+                            "address": symbols["g_write_watch_target"],
+                            "size": 8,
+                            "watch_id": "structured_write_watch",
+                        },
+                    )
+
+                    await asyncio.sleep(0.5)
+
+                    read_results = await session.call_tool(
+                        "poll_access_watch_results",
+                        {
+                            "pid": target.pid,
+                            "process_name": TARGET_PROCESS_NAME,
+                            "watch_id": "structured_read_watch",
+                        },
+                    )
+                    write_results = await session.call_tool(
+                        "poll_access_watch_results",
+                        {
+                            "pid": target.pid,
+                            "process_name": TARGET_PROCESS_NAME,
+                            "watch_id": "structured_write_watch",
+                        },
+                    )
+
+                    await session.call_tool(
+                        "unwatch_access_watch",
+                        {
+                            "pid": target.pid,
+                            "process_name": TARGET_PROCESS_NAME,
+                            "watch_id": "structured_read_watch",
+                        },
+                    )
+                    await session.call_tool(
+                        "unwatch_access_watch",
+                        {
+                            "pid": target.pid,
+                            "process_name": TARGET_PROCESS_NAME,
+                            "watch_id": "structured_write_watch",
+                        },
+                    )
+        finally:
+            if target.poll() is None:
+                target.terminate()
+                try:
+                    target.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    target.kill()
+                    target.wait(timeout=5)
+            if target.stdout is not None:
+                target.stdout.close()
+
+        self.assertFalse(read_watch.isError)
+        self.assertFalse(write_watch.isError)
+        self.assertFalse(read_results.isError)
+        self.assertFalse(write_results.isError)
+
+        assert read_results.structuredContent is not None
+        assert write_results.structuredContent is not None
+        self.assertEqual(read_results.structuredContent["mode"], "read")
+        self.assertEqual(write_results.structuredContent["mode"], "write")
+        self.assertEqual(read_results.structuredContent["state"], "active")
+        self.assertEqual(write_results.structuredContent["state"], "active")
+        self.assertFalse(read_results.structuredContent["timed_out"])
+        self.assertFalse(write_results.structuredContent["timed_out"])
+        self.assertGreater(read_results.structuredContent["total_hit_count"], 0)
+        self.assertGreater(write_results.structuredContent["total_hit_count"], 0)
+        self.assertGreaterEqual(read_results.structuredContent["source_count"], 1)
+        self.assertGreaterEqual(write_results.structuredContent["source_count"], 1)
+        self.assertEqual(read_results.structuredContent["sources"][0]["last_access_address"].lower(), symbols["g_read_watch_target"].lower())
+        self.assertEqual(write_results.structuredContent["sources"][0]["last_access_address"].lower(), symbols["g_write_watch_target"].lower())
+        self.assertIn("mov", read_results.structuredContent["sources"][0]["instruction"].lower())
+        self.assertIn("mov", write_results.structuredContent["sources"][0]["instruction"].lower())
 
 
 if __name__ == "__main__":
