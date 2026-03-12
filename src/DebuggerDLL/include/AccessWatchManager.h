@@ -79,8 +79,6 @@ public:
 private:
     struct SourceAggregate {
         std::uintptr_t instructionAddress{0};
-        std::vector<std::uint8_t> instructionBytes;
-        std::string instructionText;
         std::uint64_t hitCount{0};
         std::uint32_t lastThreadId{0};
         std::uintptr_t lastAccessAddress{0};
@@ -115,6 +113,7 @@ private:
     void ExpireIdleWatchesLocked(std::uint64_t nowMs);
     void StoreRetainedSnapshotLocked(const WatchEntry& watch, bool timedOut);
     [[nodiscard]] AccessWatchPollResult BuildPollResultLocked(const WatchEntry& watch, bool active, bool timedOut) const;
+    [[nodiscard]] AccessWatchSource BuildSourceResult(const SourceAggregate& source) const;
     [[nodiscard]] static std::uint64_t NowMs();
     [[nodiscard]] static std::string FormatInstruction(const Instruction& instruction);
     [[nodiscard]] static std::uintptr_t PageBaseForAddress(std::uintptr_t address);
@@ -130,7 +129,6 @@ private:
     std::unordered_map<std::string, AccessWatchPollResult> retainedSnapshots_;
     std::unordered_map<std::uintptr_t, ManagedPage> managedPages_;
     std::unordered_map<DWORD, std::unordered_set<std::uintptr_t>> pendingRearms_;
-    std::unordered_set<DWORD> internalThreadIds_;
 };
 
 }  // namespace idmcp

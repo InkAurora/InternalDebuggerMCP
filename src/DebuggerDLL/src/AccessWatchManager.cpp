@@ -80,12 +80,26 @@ void AccessWatchManager::Stop() {
         std::scoped_lock lock(mutex_);
         activeWatches_.clear();
         retainedSnapshots_.clear();
-        pendingRearms_.clear();
         for (const auto& [pageBase, page] : managedPages_) {
             DWORD previousProtect = 0;
             VirtualProtect(reinterpret_cast<void*>(pageBase), page.size, page.originalProtect, &previousProtect);
         }
         managedPages_.clear();
+    }
+
+    while (true) {
+        {
+            std::scoped_lock lock(mutex_);
+            if (pendingRearms_.empty()) {
+                break;
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    {
+        std::scoped_lock lock(mutex_);
+        pendingRearms_.clear();
     }
 
     if (vehHandle_ != nullptr) {
@@ -97,8 +111,6 @@ void AccessWatchManager::Stop() {
 
 void AccessWatchManager::MarkCurrentThreadInternal() {
     g_accessWatchInternalContext = true;
-    std::scoped_lock lock(mutex_);
-    internalThreadIds_.insert(GetCurrentThreadId());
 }
 
 void AccessWatchManager::UnmarkCurrentThreadInternal() {
@@ -268,28 +280,8 @@ LONG AccessWatchManager::HandleGuardPageViolation(EXCEPTION_POINTERS* exceptionP
     pendingRearms_[threadId].insert(pageBase);
     exceptionPointers->ContextRecord->EFlags |= 0x100U;
 
-    const bool isInternalThread = g_accessWatchInternalContext || internalThreadIds_.contains(threadId);
-    if (isInternalThread) {
+    if (g_accessWatchInternalContext) {
         return EXCEPTION_CONTINUE_EXECUTION;
-    }
-
-    std::vector<std::uint8_t> instructionWindow;
-    if (!memoryReader_.ReadBytes(static_cast<std::uintptr_t>(exceptionPointers->ContextRecord->Rip), kAccessWatchInstructionBytes, instructionWindow)) {
-        instructionWindow.clear();
-    }
-    const auto instructions = disassembler_.Disassemble(
-        static_cast<std::uintptr_t>(exceptionPointers->ContextRecord->Rip),
-        instructionWindow,
-        1);
-
-    std::vector<std::uint8_t> instructionBytes;
-    std::string instructionText = "unknown";
-    if (!instructions.empty()) {
-        instructionBytes = instructions.front().bytes;
-        instructionText = FormatInstruction(instructions.front());
-    } else if (!instructionWindow.empty()) {
-        instructionBytes = {instructionWindow.front()};
-        instructionText = std::format("{:02X} - db", instructionWindow.front());
     }
 
     for (auto& [_, watch] : activeWatches_) {
@@ -311,8 +303,6 @@ LONG AccessWatchManager::HandleGuardPageViolation(EXCEPTION_POINTERS* exceptionP
         auto& source = watch.sources[static_cast<std::uintptr_t>(exceptionPointers->ContextRecord->Rip)];
         if (source.hitCount == 0) {
             source.instructionAddress = static_cast<std::uintptr_t>(exceptionPointers->ContextRecord->Rip);
-            source.instructionBytes = instructionBytes;
-            source.instructionText = instructionText;
         }
         source.hitCount += 1;
         source.lastThreadId = threadId;
@@ -379,15 +369,6 @@ void AccessWatchManager::ReleasePageLocked(const std::uintptr_t pageBase) {
     DWORD previousProtect = 0;
     VirtualProtect(reinterpret_cast<void*>(pageBase), page->second.size, page->second.originalProtect, &previousProtect);
     managedPages_.erase(page);
-
-    for (auto pending = pendingRearms_.begin(); pending != pendingRearms_.end();) {
-        pending->second.erase(pageBase);
-        if (pending->second.empty()) {
-            pending = pendingRearms_.erase(pending);
-            continue;
-        }
-        ++pending;
-    }
 }
 
 void AccessWatchManager::ExpireIdleWatchesLocked(const std::uint64_t nowMs) {
@@ -426,14 +407,7 @@ AccessWatchPollResult AccessWatchManager::BuildPollResultLocked(const WatchEntry
 
     result.sources.reserve(watch.sources.size());
     for (const auto& [_, source] : watch.sources) {
-        result.sources.push_back(AccessWatchSource{
-            .instructionAddress = source.instructionAddress,
-            .instructionBytes = source.instructionBytes,
-            .instructionText = source.instructionText,
-            .hitCount = source.hitCount,
-            .lastThreadId = source.lastThreadId,
-            .lastAccessAddress = source.lastAccessAddress,
-        });
+        result.sources.push_back(BuildSourceResult(source));
     }
 
     std::sort(result.sources.begin(), result.sources.end(), [](const AccessWatchSource& left, const AccessWatchSource& right) {
@@ -442,6 +416,42 @@ AccessWatchPollResult AccessWatchManager::BuildPollResultLocked(const WatchEntry
         }
         return left.instructionAddress < right.instructionAddress;
     });
+    return result;
+}
+
+AccessWatchSource AccessWatchManager::BuildSourceResult(const SourceAggregate& source) const {
+    AccessWatchSource result{
+        .instructionAddress = source.instructionAddress,
+        .hitCount = source.hitCount,
+        .lastThreadId = source.lastThreadId,
+        .lastAccessAddress = source.lastAccessAddress,
+    };
+
+    if (source.instructionAddress == 0) {
+        result.instructionText = "unknown";
+        return result;
+    }
+
+    std::vector<std::uint8_t> instructionWindow;
+    if (!memoryReader_.ReadBytes(source.instructionAddress, kAccessWatchInstructionBytes, instructionWindow)) {
+        result.instructionText = "unknown";
+        return result;
+    }
+
+    const auto instructions = disassembler_.Disassemble(source.instructionAddress, instructionWindow, 1);
+    if (!instructions.empty()) {
+        result.instructionBytes = instructions.front().bytes;
+        result.instructionText = FormatInstruction(instructions.front());
+        return result;
+    }
+
+    if (!instructionWindow.empty()) {
+        result.instructionBytes = {instructionWindow.front()};
+        result.instructionText = std::format("{:02X} - db", instructionWindow.front());
+        return result;
+    }
+
+    result.instructionText = "unknown";
     return result;
 }
 

@@ -413,6 +413,42 @@ class AutoInjectionRequestsTest(unittest.TestCase):
         self.assertIn("mov", read_source[2].lower())
         self.assertIn("mov", write_source[2].lower())
 
+    def test_access_watch_unwatch_does_not_crash_target(self) -> None:
+        for attempt in range(10):
+            watch_id = f"write_unwatch_{attempt}"
+            watch = _send_native_request(
+                self.session_manager,
+                self.target_pid,
+                "watch_memory_writes",
+                process_name=TARGET_PROCESS_NAME,
+                address=self.target_symbols["g_write_watch_target"],
+                size=8,
+                watch_id=watch_id,
+            )
+
+            self.assertEqual(watch["watch_id"][0], watch_id)
+            time.sleep(0.05)
+
+            removed = _send_native_request(
+                self.session_manager,
+                self.target_pid,
+                "unwatch_access_watch",
+                process_name=TARGET_PROCESS_NAME,
+                watch_id=watch_id,
+            )
+
+            self.assertEqual(removed["watch_id"][0], watch_id)
+            self.assertEqual(removed["removed"][0], "true")
+            self.assertIsNone(self.target_process.poll())
+
+            ping = _send_native_request(
+                self.session_manager,
+                self.target_pid,
+                "ping",
+                process_name=TARGET_PROCESS_NAME,
+            )
+            self.assertEqual(ping["pid"][0], str(self.target_pid))
+
     def test_create_aob_pattern_round_trips_for_code_and_data(self) -> None:
         code_address = f"0x{int(self.target_symbols['g_aob_code_anchor'], 16) + 1:X}"
         data_address = f"0x{int(self.target_symbols['g_aob_data_anchor'], 16) + 4:X}"

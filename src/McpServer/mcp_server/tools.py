@@ -685,7 +685,7 @@ def create_mcp(session_manager: SessionManager) -> FastMCP:
             )
         return _structured_result({"event_count": int(fields["event_count"][0]), "events": events})
 
-    @mcp.tool(description="Install a breakpoint-backed read watch for a small memory range and aggregate hits by source instruction. Requires both pid and process_name for stale-PID recovery.")
+    @mcp.tool(description="Install a guard-page-backed read watch for a small memory range and aggregate hits by source instruction. Requires both pid and process_name for stale-PID recovery.")
     async def watch_memory_reads(
         pid: int,
         process_name: str,
@@ -714,7 +714,7 @@ def create_mcp(session_manager: SessionManager) -> FastMCP:
             }
         )
 
-    @mcp.tool(description="Install a breakpoint-backed write watch for a small memory range and aggregate hits by source instruction. Requires both pid and process_name for stale-PID recovery.")
+    @mcp.tool(description="Install a guard-page-backed write watch for a small memory range and aggregate hits by source instruction. Requires both pid and process_name for stale-PID recovery.")
     async def watch_memory_writes(
         pid: int,
         process_name: str,
@@ -743,7 +743,7 @@ def create_mcp(session_manager: SessionManager) -> FastMCP:
             }
         )
 
-    @mcp.tool(description="Poll aggregated source hits for a breakpoint-backed access watch. If the watch idled for more than 60 seconds, the native layer detaches it and returns the retained snapshot once. Requires both pid and process_name for stale-PID recovery.")
+    @mcp.tool(description="Poll aggregated source hits for a guard-page-backed access watch. If the watch idled for more than 60 seconds, the native layer detaches it and returns the retained snapshot once. Requires both pid and process_name for stale-PID recovery.")
     async def poll_access_watch_results(
         pid: int,
         process_name: str,
