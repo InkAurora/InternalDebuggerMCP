@@ -48,9 +48,10 @@ If an auto-injecting tool targets a process whose debugger pipe is not yet reach
 - `list_modules` returns `enumeration_method="toolhelp_snapshot"` in addition to the module list.
 - `watch_memory_reads` and `watch_memory_writes` are separate access-watch tools that aggregate hits by source instruction rather than returning a raw event stream.
 - Access watches currently support at most 4 concurrent active watched addresses per process and only sizes `1`, `2`, `4`, or `8` bytes.
-- Access watches use guarded pages in the injected process. The native exception record provides the accessed address plus the read or write access type used for tool-specific filtering.
+- Access reads use guarded pages in the injected process. The native exception record provides the accessed address plus the read access type used for filtering.
+- Access writes use hardware breakpoints on the watched address across the target's threads and therefore avoid page-wide faulting overhead.
 - `poll_access_watch_results` returns cumulative source summaries for the specified watch id. Each source record includes the instruction address, instruction bytes, formatted instruction text, hit count, last thread id, and last accessed address.
-- If a breakpoint-backed watch is not polled for more than 60 seconds, the native layer detaches it, keeps one retained snapshot in memory, and returns that retained snapshot on the next `poll_access_watch_results` call before clearing it.
+- If an access watch is not polled for more than 60 seconds, the native layer detaches it, keeps one retained snapshot in memory, and returns that retained snapshot on the next `poll_access_watch_results` call before clearing it.
 - `disassemble` reads bytes through the native transport and prefers Capstone in the Python MCP layer, falling back to the native decoder only when Capstone is unavailable.
 - `invoke_function` supports either a raw `address` or a loaded `module` plus `export`. The current implementation is Win64-only and supports up to 6 arguments.
 - `invoke_function` argument objects support the kinds `u64`, `f32`, `f64`, `pointer`, `bytes`, `string`, `utf8`, `utf16`, `inout_buffer`, and `out_buffer`.

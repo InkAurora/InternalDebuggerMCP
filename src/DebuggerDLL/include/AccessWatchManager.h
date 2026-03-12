@@ -77,6 +77,11 @@ public:
     [[nodiscard]] std::size_t ActiveWatchCount() const;
 
 private:
+    enum class AccessWatchBackend {
+        GuardPage,
+        HardwareBreakpoint,
+    };
+
     struct SourceAggregate {
         std::uintptr_t instructionAddress{0};
         std::uint64_t hitCount{0};
@@ -86,13 +91,21 @@ private:
 
     struct WatchEntry {
         std::string watchId;
+        AccessWatchBackend backend;
         AccessWatchMode mode;
         std::uintptr_t address;
         std::size_t size;
         std::uintptr_t pageBase;
+        int hardwareSlot;
         std::uint64_t lastPollMs;
         std::uint64_t totalHitCount;
         std::unordered_map<std::uintptr_t, SourceAggregate> sources;
+    };
+
+    struct HardwareWatchConfig {
+        int slot;
+        std::uintptr_t address;
+        std::size_t size;
     };
 
     struct ManagedPage {
@@ -109,11 +122,19 @@ private:
     [[nodiscard]] LONG HandleGuardPageViolation(EXCEPTION_POINTERS* exceptionPointers);
     [[nodiscard]] LONG HandleSingleStep(EXCEPTION_POINTERS* exceptionPointers);
     [[nodiscard]] bool ArmPageGuardLocked(std::uintptr_t pageBase);
+    [[nodiscard]] bool SyncHardwareBreakpoints(bool clearAll);
+    [[nodiscard]] bool HandleHardwareBreakpointsLocked(EXCEPTION_POINTERS* exceptionPointers, DWORD threadId);
+    [[nodiscard]] std::vector<HardwareWatchConfig> CollectHardwareConfigsLocked() const;
+    [[nodiscard]] int AllocateHardwareSlotLocked() const;
     void ReleasePageLocked(std::uintptr_t pageBase);
     void ExpireIdleWatchesLocked(std::uint64_t nowMs);
     void StoreRetainedSnapshotLocked(const WatchEntry& watch, bool timedOut);
     [[nodiscard]] AccessWatchPollResult BuildPollResultLocked(const WatchEntry& watch, bool active, bool timedOut) const;
     [[nodiscard]] AccessWatchSource BuildSourceResult(const SourceAggregate& source) const;
+    [[nodiscard]] static std::vector<DWORD> EnumerateProcessThreadIds();
+    [[nodiscard]] static bool IsHardwareBreakpointAligned(std::uintptr_t address, std::size_t size);
+    [[nodiscard]] static DWORD64 EncodeHardwareBreakpointControl(const std::vector<HardwareWatchConfig>& configs);
+    static void AssignHardwareBreakpointAddress(CONTEXT& context, int slot, std::uintptr_t address);
     [[nodiscard]] static std::uint64_t NowMs();
     [[nodiscard]] static std::string FormatInstruction(const Instruction& instruction);
     [[nodiscard]] static std::uintptr_t PageBaseForAddress(std::uintptr_t address);
