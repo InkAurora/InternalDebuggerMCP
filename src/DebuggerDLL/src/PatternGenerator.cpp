@@ -3,6 +3,7 @@
 #include <Windows.h>
 
 #include <algorithm>
+#include <cstring>
 #include <format>
 
 #include "DebuggerProtocol.h"
@@ -22,6 +23,38 @@ namespace {
            baseProtect == PAGE_EXECUTE_READ ||
            baseProtect == PAGE_EXECUTE_READWRITE ||
            baseProtect == PAGE_EXECUTE_WRITECOPY;
+}
+
+struct CandidateRegionContext {
+    std::uintptr_t start = 0;
+    std::uintptr_t end = 0;
+    bool executable = false;
+};
+
+[[nodiscard]] bool TryGetCandidateRegionContext(
+    const std::uintptr_t address,
+    CandidateRegionContext& context) {
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (VirtualQuery(reinterpret_cast<LPCVOID>(address), &mbi, sizeof(mbi)) != sizeof(mbi) || mbi.State != MEM_COMMIT) {
+        return false;
+    }
+
+    context.start = reinterpret_cast<std::uintptr_t>(mbi.BaseAddress);
+    context.end = context.start + mbi.RegionSize;
+    context.executable = IsExecutableProtection(mbi.Protect);
+    return true;
+}
+
+[[nodiscard]] bool CopyBytesGuarded(
+    const std::uintptr_t address,
+    const std::size_t size,
+    std::uint8_t* output) noexcept {
+    __try {
+        std::memcpy(output, reinterpret_cast<const void*>(address), size);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
 }
 
 }  // namespace
@@ -51,29 +84,50 @@ bool PatternGenerator::Generate(
         return false;
     }
 
-    const bool executable = IsExecutableAddress(address);
+    CandidateRegionContext candidateRegion{};
+    if (!TryGetCandidateRegionContext(address, candidateRegion)) {
+        error = "memory_read_failed";
+        return false;
+    }
+
     const auto readableRegions = memoryReader_.EnumerateReadableRegions(std::nullopt, std::nullopt);
+    std::vector<std::uint8_t> bytes;
+    bytes.reserve(maxBytes);
+    std::vector<PatternByte> exact;
+    exact.reserve(maxBytes);
+    std::vector<PatternByte> codeAware;
+    codeAware.reserve(maxBytes);
+    const auto maxOffsetByStart = address - candidateRegion.start;
+    const auto bytesAvailableFromAddress = candidateRegion.end - address;
     for (std::size_t length = 1; length <= maxBytes; ++length) {
-        for (std::size_t targetOffset = 0; targetOffset < length; ++targetOffset) {
+        const auto minOffsetByEnd = length > bytesAvailableFromAddress ? length - bytesAvailableFromAddress : 0;
+        const auto maxTargetOffset = std::min(length - 1, maxOffsetByStart);
+        if (minOffsetByEnd > maxTargetOffset) {
+            continue;
+        }
+
+        for (std::size_t targetOffset = minOffsetByEnd; targetOffset <= maxTargetOffset; ++targetOffset) {
             if (address < targetOffset) {
-                continue;
+                break;
             }
 
             const auto start = address - targetOffset;
-            std::vector<std::uint8_t> bytes;
-            if (!memoryReader_.ReadBytes(start, length, bytes)) {
+            bytes.resize(length);
+            if (!CopyBytesGuarded(start, length, bytes.data())) {
                 continue;
             }
 
-            auto exact = BuildExactPattern(bytes);
-            std::vector<PatternByte> codeAware;
-            if (executable) {
-                codeAware = BuildCodeAwarePattern(start, bytes);
+            BuildExactPattern(bytes, exact);
+            bool hasCodeAwareWildcards = false;
+            if (candidateRegion.executable) {
+                hasCodeAwareWildcards = BuildCodeAwarePattern(start, bytes, codeAware);
+            } else {
+                codeAware.clear();
             }
 
             std::fill(bytes.begin(), bytes.end(), static_cast<std::uint8_t>(0));
 
-            if (executable && CountWildcards(codeAware) > 0) {
+            if (candidateRegion.executable && hasCodeAwareWildcards) {
                 if (IsUniqueCandidate(codeAware, start, readableRegions)) {
                     result = GeneratedPatternResult{
                         .address = address,
@@ -144,26 +198,22 @@ bool PatternGenerator::IsUniqueCandidate(
     return matches.size() == 1 && matches.front() == expectedMatch;
 }
 
-bool PatternGenerator::IsExecutableAddress(const std::uintptr_t address) const {
-    MEMORY_BASIC_INFORMATION mbi{};
-    return VirtualQuery(reinterpret_cast<LPCVOID>(address), &mbi, sizeof(mbi)) == sizeof(mbi) &&
-           mbi.State == MEM_COMMIT &&
-           IsExecutableProtection(mbi.Protect);
-}
-
-std::vector<PatternByte> PatternGenerator::BuildExactPattern(const std::vector<std::uint8_t>& bytes) const {
-    std::vector<PatternByte> pattern;
+void PatternGenerator::BuildExactPattern(
+    const std::vector<std::uint8_t>& bytes,
+    std::vector<PatternByte>& pattern) const {
+    pattern.clear();
     pattern.reserve(bytes.size());
     for (const auto byte : bytes) {
         pattern.push_back(PatternByte{byte, false});
     }
-    return pattern;
 }
 
-std::vector<PatternByte> PatternGenerator::BuildCodeAwarePattern(
+bool PatternGenerator::BuildCodeAwarePattern(
     const std::uintptr_t start,
-    const std::vector<std::uint8_t>& bytes) const {
-    auto pattern = BuildExactPattern(bytes);
+    const std::vector<std::uint8_t>& bytes,
+    std::vector<PatternByte>& pattern) const {
+    BuildExactPattern(bytes, pattern);
+    bool hasWildcards = false;
     const auto instructions = disassembler_.Disassemble(start, bytes, bytes.size());
     for (const auto& instruction : instructions) {
         const auto offset = static_cast<std::size_t>(instruction.address - start);
@@ -175,7 +225,10 @@ std::vector<PatternByte> PatternGenerator::BuildCodeAwarePattern(
             instruction.bytes.size() == 5 &&
             (instruction.bytes[0] == 0xE8 || instruction.bytes[0] == 0xE9)) {
             for (std::size_t index = 1; index < instruction.bytes.size() && offset + index < pattern.size(); ++index) {
-                pattern[offset + index].wildcard = true;
+                if (!pattern[offset + index].wildcard) {
+                    pattern[offset + index].wildcard = true;
+                    hasWildcards = true;
+                }
             }
             continue;
         }
@@ -185,12 +238,15 @@ std::vector<PatternByte> PatternGenerator::BuildCodeAwarePattern(
             instruction.bytes.size() >= 7) {
             const auto wildcardStart = instruction.bytes.size() - 4;
             for (std::size_t index = wildcardStart; index < instruction.bytes.size() && offset + index < pattern.size(); ++index) {
-                pattern[offset + index].wildcard = true;
+                if (!pattern[offset + index].wildcard) {
+                    pattern[offset + index].wildcard = true;
+                    hasWildcards = true;
+                }
             }
         }
     }
 
-    return pattern;
+    return hasWildcards;
 }
 
 }  // namespace idmcp

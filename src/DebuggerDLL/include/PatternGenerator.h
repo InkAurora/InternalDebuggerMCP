@@ -39,9 +39,11 @@ private:
         const std::vector<PatternByte>& pattern,
         std::uintptr_t expectedMatch,
         const ReadableMemoryRegions& regions) const;
-    [[nodiscard]] bool IsExecutableAddress(std::uintptr_t address) const;
-    [[nodiscard]] std::vector<PatternByte> BuildExactPattern(const std::vector<std::uint8_t>& bytes) const;
-    [[nodiscard]] std::vector<PatternByte> BuildCodeAwarePattern(std::uintptr_t start, const std::vector<std::uint8_t>& bytes) const;
+    void BuildExactPattern(const std::vector<std::uint8_t>& bytes, std::vector<PatternByte>& pattern) const;
+    [[nodiscard]] bool BuildCodeAwarePattern(
+        std::uintptr_t start,
+        const std::vector<std::uint8_t>& bytes,
+        std::vector<PatternByte>& pattern) const;
 
     const MemoryReader& memoryReader_;
     const PatternScanner& patternScanner_;
