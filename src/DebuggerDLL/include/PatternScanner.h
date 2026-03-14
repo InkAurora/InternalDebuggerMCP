@@ -15,6 +15,8 @@ struct PatternByte {
     bool wildcard;
 };
 
+using ReadableMemoryRegions = std::vector<MEMORY_BASIC_INFORMATION>;
+
 class PatternScanner {
 public:
     explicit PatternScanner(const MemoryReader& memoryReader);
@@ -29,10 +31,12 @@ public:
         std::optional<std::uintptr_t> start,
         std::optional<std::size_t> length,
         std::size_t limit) const;
+    [[nodiscard]] std::vector<std::uintptr_t> ScanPrepared(
+        const std::vector<PatternByte>& pattern,
+        const ReadableMemoryRegions& regions,
+        std::size_t limit) const;
 
 private:
-    [[nodiscard]] bool MatchesAt(const std::vector<PatternByte>& pattern, const std::uint8_t* candidate) const;
-
     const MemoryReader& memoryReader_;
 };
 

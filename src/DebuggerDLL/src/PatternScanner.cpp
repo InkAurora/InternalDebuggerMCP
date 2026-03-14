@@ -2,8 +2,8 @@
 
 #include <Windows.h>
 
-#include <algorithm>
 #include <sstream>
+#include <span>
 
 #include "DebuggerProtocol.h"
 
@@ -117,12 +117,19 @@ std::vector<std::uintptr_t> PatternScanner::Scan(
     const std::optional<std::uintptr_t> start,
     const std::optional<std::size_t> length,
     const std::size_t limit) const {
+    const auto regions = memoryReader_.EnumerateReadableRegions(start, length);
+    return ScanPrepared(pattern, regions, limit);
+}
+
+std::vector<std::uintptr_t> PatternScanner::ScanPrepared(
+    const std::vector<PatternByte>& pattern,
+    const ReadableMemoryRegions& regions,
+    const std::size_t limit) const {
     std::vector<std::uintptr_t> matches;
     if (pattern.empty() || limit == 0) {
         return matches;
     }
 
-    const auto regions = memoryReader_.EnumerateReadableRegions(start, length);
     for (const auto& region : regions) {
         const auto base = reinterpret_cast<std::uintptr_t>(region.BaseAddress);
         if (region.RegionSize < pattern.size()) {
@@ -144,18 +151,6 @@ std::vector<std::uintptr_t> PatternScanner::Scan(
     }
 
     return matches;
-}
-
-bool PatternScanner::MatchesAt(const std::vector<PatternByte>& pattern, const std::uint8_t* candidate) const {
-    for (std::size_t index = 0; index < pattern.size(); ++index) {
-        if (pattern[index].wildcard) {
-            continue;
-        }
-        if (candidate[index] != pattern[index].value) {
-            return false;
-        }
-    }
-    return true;
 }
 
 }  // namespace idmcp

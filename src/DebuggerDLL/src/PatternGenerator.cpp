@@ -52,6 +52,7 @@ bool PatternGenerator::Generate(
     }
 
     const bool executable = IsExecutableAddress(address);
+    const auto readableRegions = memoryReader_.EnumerateReadableRegions(std::nullopt, std::nullopt);
     for (std::size_t length = 1; length <= maxBytes; ++length) {
         for (std::size_t targetOffset = 0; targetOffset < length; ++targetOffset) {
             if (address < targetOffset) {
@@ -73,7 +74,7 @@ bool PatternGenerator::Generate(
             std::fill(bytes.begin(), bytes.end(), static_cast<std::uint8_t>(0));
 
             if (executable && CountWildcards(codeAware) > 0) {
-                if (IsUniqueCandidate(codeAware, start)) {
+                if (IsUniqueCandidate(codeAware, start, readableRegions)) {
                     result = GeneratedPatternResult{
                         .address = address,
                         .patternStart = start,
@@ -85,7 +86,7 @@ bool PatternGenerator::Generate(
                 }
             }
 
-            if (!IsUniqueCandidate(exact, start)) {
+            if (!IsUniqueCandidate(exact, start, readableRegions)) {
                 continue;
             }
 
@@ -135,8 +136,11 @@ std::size_t PatternGenerator::CountWildcards(const std::vector<PatternByte>& pat
     }));
 }
 
-bool PatternGenerator::IsUniqueCandidate(const std::vector<PatternByte>& pattern, const std::uintptr_t expectedMatch) const {
-    const auto matches = patternScanner_.Scan(pattern, std::nullopt, std::nullopt, 2);
+bool PatternGenerator::IsUniqueCandidate(
+    const std::vector<PatternByte>& pattern,
+    const std::uintptr_t expectedMatch,
+    const ReadableMemoryRegions& regions) const {
+    const auto matches = patternScanner_.ScanPrepared(pattern, regions, 2);
     return matches.size() == 1 && matches.front() == expectedMatch;
 }
 

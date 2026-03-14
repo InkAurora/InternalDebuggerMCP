@@ -35,7 +35,10 @@ public:
     [[nodiscard]] static std::size_t CountWildcards(const std::vector<PatternByte>& pattern);
 
 private:
-    [[nodiscard]] bool IsUniqueCandidate(const std::vector<PatternByte>& pattern, std::uintptr_t expectedMatch) const;
+    [[nodiscard]] bool IsUniqueCandidate(
+        const std::vector<PatternByte>& pattern,
+        std::uintptr_t expectedMatch,
+        const ReadableMemoryRegions& regions) const;
     [[nodiscard]] bool IsExecutableAddress(std::uintptr_t address) const;
     [[nodiscard]] std::vector<PatternByte> BuildExactPattern(const std::vector<std::uint8_t>& bytes) const;
     [[nodiscard]] std::vector<PatternByte> BuildCodeAwarePattern(std::uintptr_t start, const std::vector<std::uint8_t>& bytes) const;
