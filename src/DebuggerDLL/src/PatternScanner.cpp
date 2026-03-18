@@ -41,70 +41,79 @@ namespace {
 }
 
 [[nodiscard]] bool MatchesCompiledAt(const CompiledPattern& pattern, const std::uint8_t* candidate) noexcept {
-    for (const auto& exactByte : pattern.exactBytes) {
-        if (candidate[exactByte.offset] != exactByte.value) {
-            return false;
+    __try {
+        for (const auto& exactByte : pattern.exactBytes) {
+            if (candidate[exactByte.offset] != exactByte.value) {
+                return false;
+            }
         }
-    }
 
-    return true;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
 }
 
 [[nodiscard]] const std::uint8_t* FindAnchorMatch(
     const std::uint8_t* begin,
     const std::uint8_t* end,
     const CompiledPattern& pattern) noexcept {
-    if (pattern.anchorLength == 0 || begin >= end) {
-        return nullptr;
-    }
-
-    if (pattern.anchorLength >= 3) {
-        const auto anchorLength = static_cast<std::ptrdiff_t>(pattern.anchorLength);
-        const auto* last = end - anchorLength;
-        const auto anchorLastByte = pattern.pattern[pattern.anchorOffset + pattern.anchorLength - 1].value;
-        const auto prefixLength = pattern.anchorLength - 1;
-        const auto* cursor = begin;
-        while (cursor <= last) {
-            const auto candidateLastByte = cursor[prefixLength];
-            bool prefixMatches = candidateLastByte == anchorLastByte;
-            for (std::size_t index = 0; prefixMatches && index < prefixLength; ++index) {
-                if (cursor[index] != pattern.pattern[pattern.anchorOffset + index].value) {
-                    prefixMatches = false;
-                }
-            }
-            if (prefixMatches) {
-                return cursor;
-            }
-
-            cursor += static_cast<std::ptrdiff_t>(pattern.anchorShift[candidateLastByte]);
-        }
-        return nullptr;
-    }
-
-    const auto anchorFirstByte = pattern.pattern[pattern.anchorOffset].value;
-    const auto* cursor = begin;
-    const auto* last = end - static_cast<std::ptrdiff_t>(pattern.anchorLength);
-    while (cursor <= last) {
-        const auto remaining = static_cast<std::size_t>(last - cursor + 1);
-        const auto* candidate = static_cast<const std::uint8_t*>(std::memchr(cursor, anchorFirstByte, remaining));
-        if (candidate == nullptr) {
+    __try {
+        if (pattern.anchorLength == 0 || begin >= end) {
             return nullptr;
         }
 
-        bool matches = true;
-        for (std::size_t index = 1; index < pattern.anchorLength; ++index) {
-            if (candidate[index] != pattern.pattern[pattern.anchorOffset + index].value) {
-                matches = false;
-                break;
-            }
-        }
-        if (matches) {
-            return candidate;
-        }
-        cursor = candidate + 1;
-    }
+        if (pattern.anchorLength >= 3) {
+            const auto anchorLength = static_cast<std::ptrdiff_t>(pattern.anchorLength);
+            const auto* last = end - anchorLength;
+            const auto anchorLastByte = pattern.pattern[pattern.anchorOffset + pattern.anchorLength - 1].value;
+            const auto prefixLength = pattern.anchorLength - 1;
+            const auto* cursor = begin;
+            while (cursor <= last) {
+                const auto candidateLastByte = cursor[prefixLength];
+                bool prefixMatches = candidateLastByte == anchorLastByte;
+                for (std::size_t index = 0; prefixMatches && index < prefixLength; ++index) {
+                    if (cursor[index] != pattern.pattern[pattern.anchorOffset + index].value) {
+                        prefixMatches = false;
+                    }
+                }
 
-    return nullptr;
+                if (prefixMatches) {
+                    return cursor;
+                }
+
+                cursor += static_cast<std::ptrdiff_t>(pattern.anchorShift[candidateLastByte]);
+            }
+            return nullptr;
+        }
+
+        const auto anchorFirstByte = pattern.pattern[pattern.anchorOffset].value;
+        const auto* cursor = begin;
+        const auto* last = end - static_cast<std::ptrdiff_t>(pattern.anchorLength);
+        while (cursor <= last) {
+            const auto remaining = static_cast<std::size_t>(last - cursor + 1);
+            const auto* candidate = static_cast<const std::uint8_t*>(std::memchr(cursor, anchorFirstByte, remaining));
+            if (candidate == nullptr) {
+                return nullptr;
+            }
+
+            bool matches = true;
+            for (std::size_t index = 1; index < pattern.anchorLength; ++index) {
+                if (candidate[index] != pattern.pattern[pattern.anchorOffset + index].value) {
+                    matches = false;
+                    break;
+                }
+            }
+            if (matches) {
+                return candidate;
+            }
+            cursor = candidate + 1;
+        }
+
+        return nullptr;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return nullptr;
+    }
 }
 
 }  // namespace
