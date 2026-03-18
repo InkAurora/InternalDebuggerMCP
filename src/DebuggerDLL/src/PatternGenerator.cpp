@@ -200,7 +200,8 @@ bool PatternGenerator::IsUniqueCandidate(
     const std::vector<PatternByte>& pattern,
     const std::uintptr_t expectedMatch,
     const ReadableMemoryRegions& regions) const {
-    const auto matches = patternScanner_.ScanPrepared(pattern, regions, 2);
+    const auto compiled = patternScanner_.CompilePattern(pattern);
+    const auto matches = patternScanner_.ScanCompiledPrepared(compiled, regions, 2);
     return matches.size() == 1 && matches.front() == expectedMatch;
 }
 
