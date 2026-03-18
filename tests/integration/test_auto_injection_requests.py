@@ -225,6 +225,42 @@ class AutoInjectionRequestsTest(unittest.TestCase):
         self.assertIn("requested_size=16", message)
         self.assertIn("reason=region_not_committed", message)
 
+    def test_memory_write_failures_return_descriptive_native_fields(self) -> None:
+        _send_native_request(self.session_manager, self.target_pid, "ping", process_name=TARGET_PROCESS_NAME)
+
+        response = PipeClient(
+            self.target_pid,
+            timeout_ms=5000,
+        ).request("write_memory", address="0x1", bytes="AA BB CC DD")
+
+        with self.assertRaises(NativeRequestError) as context:
+            response.raise_for_error()
+
+        self.assertEqual(context.exception.code, "memory_write_failed")
+        self.assertEqual(context.exception.one("address"), "0x1")
+        self.assertEqual(context.exception.one("requested_size"), "4")
+        self.assertEqual(context.exception.one("memory_reason"), "region_not_committed")
+        self.assertEqual(context.exception.one("region_state"), "MEM_FREE")
+
+    def test_watch_arm_failures_include_requested_range_context(self) -> None:
+        invalid_address = f"0x{int(self.target_symbols['g_write_watch_target'], 16) + 1:X}"
+
+        with self.assertRaises(RuntimeError) as context:
+            _send_native_request(
+                self.session_manager,
+                self.target_pid,
+                "watch_memory_writes",
+                process_name=TARGET_PROCESS_NAME,
+                address=invalid_address,
+                size=8,
+                watch_id="misaligned_write_watch",
+            )
+
+        message = str(context.exception)
+        self.assertIn("unsupported_watch_alignment", message)
+        self.assertIn(f"address={invalid_address}", message)
+        self.assertIn("requested_size=8", message)
+
     def test_invoke_function_supports_raw_addresses_exports_and_output_buffers(self) -> None:
         raw_fields = _send_native_request(
             self.session_manager,

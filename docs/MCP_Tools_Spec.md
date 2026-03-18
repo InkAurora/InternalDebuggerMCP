@@ -33,6 +33,7 @@ If an auto-injecting tool targets a process whose debugger pipe is not yet reach
 
 - Addresses are provided as hex strings.
 - Memory bytes are returned as space-separated hex.
+- `read_memory`, `write_memory`, `memory_verify_failed`, and `disassemble` failures may include extra native diagnostic fields such as `address`, `requested_size`, `memory_reason`, `region_base`, `region_size`, `region_state`, `region_protect`, `win32_error_detail`, and `copy_exception_code`.
 - Auto-injecting tools now require both `pid` and `process_name`. The pipe protocol remains PID-based; `process_name` is used only as an exact-match fallback when the supplied PID no longer attaches cleanly.
 - Exact process-name fallback fails if zero or multiple matching processes are found.
 - `write_memory` accepts either `bytes_hex` or `text`; text payloads are encoded as `ascii`, `utf-8`, or `utf-16-le` before the native write.
@@ -54,6 +55,7 @@ If an auto-injecting tool targets a process whose debugger pipe is not yet reach
 - `eject_debugger` does not auto-inject. It clears any tracked MCP session state for the PID and best-effort ejects the debugger DLL, preferring the live pipe path and falling back to `Injector.exe --eject` when the pipe is stale or already gone.
 - `list_modules` returns `enumeration_method="toolhelp_snapshot"` in addition to the module list.
 - `watch_memory_reads` and `watch_memory_writes` are separate access-watch tools that aggregate hits by source instruction rather than returning a raw event stream.
+- Watch-arm failures now include the requested address and size in the native error payload, even when the underlying failure is a stable command-specific code like `unsupported_watch_alignment` or `watch_limit_exceeded`.
 - Access watches currently support at most 4 concurrent active watched addresses per process and only sizes `1`, `2`, `4`, or `8` bytes.
 - Access reads use guarded pages in the injected process. The native exception record provides the accessed address plus the read access type used for filtering.
 - Access writes use hardware breakpoints on the watched address across the target's threads and therefore avoid page-wide faulting overhead.

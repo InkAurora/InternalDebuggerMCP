@@ -430,6 +430,31 @@ void PrepareInvokeCall(
     return fields;
 }
 
+[[nodiscard]] std::string DescribeWatchArmFailure(
+    const std::string_view action,
+    const std::string_view code,
+    const std::uintptr_t address,
+    const std::size_t size) {
+    return std::format(
+        "unable to {} at {} ({} bytes): {}",
+        action,
+        ToHex(address),
+        size,
+        code);
+}
+
+[[nodiscard]] std::vector<MessageField> BuildRequestedRangeFields(
+    const std::uintptr_t address,
+    const std::size_t size,
+    std::initializer_list<MessageField> extraFields = {}) {
+    std::vector<MessageField> fields{
+        {"address", ToHex(address)},
+        {"requested_size", std::to_string(size)},
+    };
+    fields.insert(fields.end(), extraFields.begin(), extraFields.end());
+    return fields;
+}
+
 [[nodiscard]] std::string BaseName(std::string_view path) {
     const auto lastSlash = path.find_last_of("\\/");
     if (lastSlash == std::string_view::npos) {
@@ -929,8 +954,12 @@ std::string DebuggerService::HandleWriteMemory(const ParsedMessage& message) con
         return MakeError("invalid_size", "byte payload exceeds maximum write limit");
     }
 
-    if (!memoryReader_.WriteBytes(*address, bytes)) {
-        return MakeError("memory_write_failed", "unable to write requested range");
+    MemoryAccessDiagnostics writeDiagnostics;
+    if (!memoryReader_.WriteBytes(*address, bytes, &writeDiagnostics)) {
+        return MakeError(
+            "memory_write_failed",
+            DescribeMemoryAccessFailure("write memory", writeDiagnostics),
+            BuildMemoryAccessErrorFields(writeDiagnostics));
     }
 
     std::vector<MessageField> fields{
@@ -942,8 +971,12 @@ std::string DebuggerService::HandleWriteMemory(const ParsedMessage& message) con
 
     if (ParseBool(message.GetFirst("read_back").value_or("false")).value_or(false)) {
         std::vector<std::uint8_t> readBack;
-        if (!memoryReader_.ReadBytes(*address, bytes.size(), readBack)) {
-            return MakeError("memory_verify_failed", "memory write succeeded but read-back verification failed");
+        MemoryAccessDiagnostics verifyDiagnostics;
+        if (!memoryReader_.ReadBytes(*address, bytes.size(), readBack, &verifyDiagnostics)) {
+            return MakeError(
+                "memory_verify_failed",
+                DescribeMemoryAccessFailure("verify written memory", verifyDiagnostics),
+                BuildMemoryAccessErrorFields(verifyDiagnostics));
         }
         fields.emplace_back("read_back", HexEncode(readBack));
     }
@@ -1092,7 +1125,10 @@ std::string DebuggerService::HandleWatchAddress(const ParsedMessage& message) {
             static_cast<std::size_t>(*size),
             static_cast<std::uint32_t>(intervalMs.value_or(250)),
             error)) {
-        return MakeError(error, "unable to arm watch");
+        return MakeError(
+            error,
+            DescribeWatchArmFailure("arm watch", error, *address, static_cast<std::size_t>(*size)),
+            BuildRequestedRangeFields(*address, static_cast<std::size_t>(*size), {{"watch_id", watchId}}));
     }
 
     return MakeOk({
@@ -1143,7 +1179,13 @@ std::string DebuggerService::HandleWatchMemoryReads(const ParsedMessage& message
     const auto watchId = providedId.value_or(MakeWatchId(*address));
     std::string error;
     if (!accessWatchManager_.AddWatch(watchId, *address, static_cast<std::size_t>(*size), AccessWatchMode::Read, error)) {
-        return MakeError(error, "unable to arm read watch");
+        return MakeError(
+            error,
+            DescribeWatchArmFailure("arm read watch", error, *address, static_cast<std::size_t>(*size)),
+            BuildRequestedRangeFields(
+                *address,
+                static_cast<std::size_t>(*size),
+                {{"watch_id", watchId}, {"mode", "read"}}));
     }
 
     return MakeOk({
@@ -1167,7 +1209,13 @@ std::string DebuggerService::HandleWatchMemoryWrites(const ParsedMessage& messag
     const auto watchId = providedId.value_or(MakeWatchId(*address));
     std::string error;
     if (!accessWatchManager_.AddWatch(watchId, *address, static_cast<std::size_t>(*size), AccessWatchMode::Write, error)) {
-        return MakeError(error, "unable to arm write watch");
+        return MakeError(
+            error,
+            DescribeWatchArmFailure("arm write watch", error, *address, static_cast<std::size_t>(*size)),
+            BuildRequestedRangeFields(
+                *address,
+                static_cast<std::size_t>(*size),
+                {{"watch_id", watchId}, {"mode", "write"}}));
     }
 
     return MakeOk({
