@@ -34,7 +34,8 @@ public:
         std::uintptr_t address,
         std::size_t size,
         std::uint32_t intervalMs,
-        std::string& error);
+        std::string& error,
+        MemoryAccessDiagnostics* diagnostics = nullptr);
     [[nodiscard]] bool RemoveWatch(const std::string& watchId);
     [[nodiscard]] std::vector<WatchEvent> DrainEvents(std::size_t limit);
     [[nodiscard]] std::size_t WatchCount() const;

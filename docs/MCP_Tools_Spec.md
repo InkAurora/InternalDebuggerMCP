@@ -56,6 +56,7 @@ If an auto-injecting tool targets a process whose debugger pipe is not yet reach
 - `list_modules` returns `enumeration_method="toolhelp_snapshot"` in addition to the module list.
 - `watch_memory_reads` and `watch_memory_writes` are separate access-watch tools that aggregate hits by source instruction rather than returning a raw event stream.
 - Watch-arm failures now include the requested address and size in the native error payload, even when the underlying failure is a stable command-specific code like `unsupported_watch_alignment` or `watch_limit_exceeded`.
+- Polling-watch and access-watch setup failures caused by unreadable or unwritable target memory may also include the same native memory diagnostic fields used by `read_memory` and `write_memory`.
 - Access watches currently support at most 4 concurrent active watched addresses per process and only sizes `1`, `2`, `4`, or `8` bytes.
 - Access reads use guarded pages in the injected process. The native exception record provides the accessed address plus the read access type used for filtering.
 - Access writes use hardware breakpoints on the watched address across the target's threads and therefore avoid page-wide faulting overhead.

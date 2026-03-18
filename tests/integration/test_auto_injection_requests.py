@@ -261,6 +261,43 @@ class AutoInjectionRequestsTest(unittest.TestCase):
         self.assertIn(f"address={invalid_address}", message)
         self.assertIn("requested_size=8", message)
 
+    def test_polling_watch_memory_failures_include_diagnostics(self) -> None:
+        _send_native_request(self.session_manager, self.target_pid, "ping", process_name=TARGET_PROCESS_NAME)
+
+        response = PipeClient(self.target_pid, timeout_ms=5000).request(
+            "watch_address",
+            address="0x1",
+            size=8,
+            watch_id="bad_poll_watch",
+        )
+
+        with self.assertRaises(NativeRequestError) as context:
+            response.raise_for_error()
+
+        self.assertEqual(context.exception.code, "memory_read_failed")
+        self.assertEqual(context.exception.one("address"), "0x1")
+        self.assertEqual(context.exception.one("requested_size"), "8")
+        self.assertEqual(context.exception.one("memory_reason"), "region_not_committed")
+        self.assertEqual(context.exception.one("watch_id"), "bad_poll_watch")
+
+    def test_access_watch_memory_failures_include_diagnostics(self) -> None:
+        with self.assertRaises(RuntimeError) as context:
+            _send_native_request(
+                self.session_manager,
+                self.target_pid,
+                "watch_memory_reads",
+                process_name=TARGET_PROCESS_NAME,
+                address="0x1",
+                size=8,
+                watch_id="bad_access_watch",
+            )
+
+        message = str(context.exception)
+        self.assertIn("memory_read_failed", message)
+        self.assertIn("address=0x1", message)
+        self.assertIn("requested_size=8", message)
+        self.assertIn("reason=region_not_committed", message)
+
     def test_invoke_function_supports_raw_addresses_exports_and_output_buffers(self) -> None:
         raw_fields = _send_native_request(
             self.session_manager,

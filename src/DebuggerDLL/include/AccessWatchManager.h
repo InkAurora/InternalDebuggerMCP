@@ -71,7 +71,8 @@ public:
         std::uintptr_t address,
         std::size_t size,
         AccessWatchMode mode,
-        std::string& error);
+        std::string& error,
+        MemoryAccessDiagnostics* diagnostics = nullptr);
     [[nodiscard]] bool RemoveWatch(const std::string& watchId, std::string& error);
     [[nodiscard]] std::optional<AccessWatchPollResult> PollResults(const std::string& watchId, std::string& error);
     [[nodiscard]] std::size_t ActiveWatchCount() const;

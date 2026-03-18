@@ -129,8 +129,14 @@ bool AccessWatchManager::AddWatch(
     const std::uintptr_t address,
     const std::size_t size,
     const AccessWatchMode mode,
-    std::string& error) {
+    std::string& error,
+    MemoryAccessDiagnostics* diagnostics) {
     error.clear();
+    if (diagnostics != nullptr) {
+        *diagnostics = {};
+        diagnostics->address = address;
+        diagnostics->size = size;
+    }
     if (watchId.empty()) {
         error = "watch_id_required";
         return false;
@@ -147,8 +153,29 @@ bool AccessWatchManager::AddWatch(
 
     MEMORY_BASIC_INFORMATION mbi{};
     if (VirtualQuery(reinterpret_cast<LPCVOID>(address), &mbi, sizeof(mbi)) != sizeof(mbi) || mbi.State != MEM_COMMIT) {
+        if (diagnostics != nullptr) {
+            if (VirtualQuery(reinterpret_cast<LPCVOID>(address), &mbi, sizeof(mbi)) == sizeof(mbi)) {
+                diagnostics->hasRegion = true;
+                diagnostics->regionBase = reinterpret_cast<std::uintptr_t>(mbi.BaseAddress);
+                diagnostics->regionSize = mbi.RegionSize;
+                diagnostics->state = mbi.State;
+                diagnostics->protect = mbi.Protect;
+                diagnostics->reason = mbi.State == MEM_COMMIT ? "memory_read_failed" : "region_not_committed";
+            } else {
+                diagnostics->reason = "virtual_query_failed";
+                diagnostics->queryError = GetLastError();
+            }
+        }
         error = "memory_read_failed";
         return false;
+    }
+
+    if (diagnostics != nullptr) {
+        diagnostics->hasRegion = true;
+        diagnostics->regionBase = reinterpret_cast<std::uintptr_t>(mbi.BaseAddress);
+        diagnostics->regionSize = mbi.RegionSize;
+        diagnostics->state = mbi.State;
+        diagnostics->protect = mbi.Protect;
     }
 
     const auto pageBase = PageBaseForAddress(address);
@@ -172,6 +199,9 @@ bool AccessWatchManager::AddWatch(
         if (mode == AccessWatchMode::Write) {
             const DWORD effectiveProtect = mbi.Protect & ~PAGE_GUARD;
             if (!IsWritableProtection(effectiveProtect)) {
+                if (diagnostics != nullptr) {
+                    diagnostics->reason = ((effectiveProtect & PAGE_NOACCESS) != 0) ? "no_access" : "protection_not_writable";
+                }
                 error = "memory_write_failed";
                 return false;
             }
@@ -198,6 +228,9 @@ bool AccessWatchManager::AddWatch(
             auto page = managedPages_.find(pageBase);
             const DWORD effectiveProtect = page == managedPages_.end() ? (mbi.Protect & ~PAGE_GUARD) : page->second.originalProtect;
             if (!IsReadableProtection(effectiveProtect)) {
+                if (diagnostics != nullptr) {
+                    diagnostics->reason = ((effectiveProtect & PAGE_NOACCESS) != 0) ? "no_access" : "protection_not_readable";
+                }
                 error = "memory_read_failed";
                 return false;
             }

@@ -34,8 +34,14 @@ bool WatchManager::AddWatch(
     const std::uintptr_t address,
     const std::size_t size,
     const std::uint32_t intervalMs,
-    std::string& error) {
+    std::string& error,
+    MemoryAccessDiagnostics* diagnostics) {
     error.clear();
+    if (diagnostics != nullptr) {
+        *diagnostics = {};
+        diagnostics->address = address;
+        diagnostics->size = size;
+    }
     if (watchId.empty()) {
         error = "watch_id_required";
         return false;
@@ -46,7 +52,7 @@ bool WatchManager::AddWatch(
     }
 
     std::vector<std::uint8_t> initialValue;
-    if (!memoryReader_.ReadBytes(address, size, initialValue)) {
+    if (!memoryReader_.ReadBytes(address, size, initialValue, diagnostics)) {
         error = "memory_read_failed";
         return false;
     }

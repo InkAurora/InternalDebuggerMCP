@@ -463,6 +463,10 @@ void PrepareInvokeCall(
     return fields;
 }
 
+void AppendErrorContext(std::vector<MessageField>& fields, std::initializer_list<MessageField> extraFields) {
+    fields.insert(fields.end(), extraFields.begin(), extraFields.end());
+}
+
 [[nodiscard]] std::string BaseName(std::string_view path) {
     const auto lastSlash = path.find_last_of("\\/");
     if (lastSlash == std::string_view::npos) {
@@ -1140,12 +1144,22 @@ std::string DebuggerService::HandleWatchAddress(const ParsedMessage& message) {
     const auto providedId = message.GetFirst("watch_id");
     const auto watchId = providedId.value_or(MakeWatchId(*address));
     std::string error;
+    MemoryAccessDiagnostics diagnostics;
     if (!watchManager_.AddWatch(
             watchId,
             *address,
             static_cast<std::size_t>(*size),
             static_cast<std::uint32_t>(intervalMs.value_or(250)),
-            error)) {
+            error,
+            &diagnostics)) {
+        if (error == "memory_read_failed") {
+            auto fields = BuildMemoryAccessErrorFields(diagnostics);
+            AppendErrorContext(fields, {{"watch_id", watchId}});
+            return MakeError(
+                error,
+                DescribeMemoryAccessFailure("arm watch", diagnostics),
+                std::move(fields));
+        }
         return MakeError(
             error,
             DescribeWatchArmFailure("arm watch", error, *address, static_cast<std::size_t>(*size)),
@@ -1199,7 +1213,22 @@ std::string DebuggerService::HandleWatchMemoryReads(const ParsedMessage& message
     const auto providedId = message.GetFirst("watch_id");
     const auto watchId = providedId.value_or(MakeWatchId(*address));
     std::string error;
-    if (!accessWatchManager_.AddWatch(watchId, *address, static_cast<std::size_t>(*size), AccessWatchMode::Read, error)) {
+    MemoryAccessDiagnostics diagnostics;
+    if (!accessWatchManager_.AddWatch(
+            watchId,
+            *address,
+            static_cast<std::size_t>(*size),
+            AccessWatchMode::Read,
+            error,
+            &diagnostics)) {
+        if (error == "memory_read_failed") {
+            auto fields = BuildMemoryAccessErrorFields(diagnostics);
+            AppendErrorContext(fields, {{"watch_id", watchId}, {"mode", "read"}});
+            return MakeError(
+                error,
+                DescribeMemoryAccessFailure("arm read watch", diagnostics),
+                std::move(fields));
+        }
         return MakeError(
             error,
             DescribeWatchArmFailure("arm read watch", error, *address, static_cast<std::size_t>(*size)),
@@ -1229,7 +1258,22 @@ std::string DebuggerService::HandleWatchMemoryWrites(const ParsedMessage& messag
     const auto providedId = message.GetFirst("watch_id");
     const auto watchId = providedId.value_or(MakeWatchId(*address));
     std::string error;
-    if (!accessWatchManager_.AddWatch(watchId, *address, static_cast<std::size_t>(*size), AccessWatchMode::Write, error)) {
+    MemoryAccessDiagnostics diagnostics;
+    if (!accessWatchManager_.AddWatch(
+            watchId,
+            *address,
+            static_cast<std::size_t>(*size),
+            AccessWatchMode::Write,
+            error,
+            &diagnostics)) {
+        if (error == "memory_read_failed" || error == "memory_write_failed") {
+            auto fields = BuildMemoryAccessErrorFields(diagnostics);
+            AppendErrorContext(fields, {{"watch_id", watchId}, {"mode", "write"}});
+            return MakeError(
+                error,
+                DescribeMemoryAccessFailure("arm write watch", diagnostics),
+                std::move(fields));
+        }
         return MakeError(
             error,
             DescribeWatchArmFailure("arm write watch", error, *address, static_cast<std::size_t>(*size)),
