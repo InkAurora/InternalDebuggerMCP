@@ -26,6 +26,7 @@ from .session_manager import SessionManager
 
 
 StructuredToolResult = Annotated[CallToolResult, dict[str, Any]]
+_MAX_UNSIGNED_ADDRESS = (1 << 64) - 1
 
 
 class _NativeRequestFailure(RuntimeError):
@@ -86,6 +87,35 @@ def _coerce_unsigned(value: Any, *, field_name: str) -> int:
     if parsed < 0:
         raise ValueError(f"{field_name} must be non-negative")
     return parsed
+
+def _coerce_address(value: Any, *, field_name: str) -> int:
+    if isinstance(value, bool):
+        raise ValueError(f"{field_name} must be a non-negative integer or hexadecimal address")
+
+    if isinstance(value, int):
+        parsed = value
+    elif isinstance(value, str):
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError(f"{field_name} must be a non-negative integer or hexadecimal address")
+        base = 16 if normalized.lower().startswith("0x") else 10
+        try:
+            parsed = int(normalized, base)
+        except ValueError as error:
+            raise ValueError(f"{field_name} must be a non-negative integer or hexadecimal address") from error
+    else:
+        raise ValueError(f"{field_name} must be a non-negative integer or hexadecimal address")
+
+    if parsed < 0:
+        raise ValueError(f"{field_name} must be non-negative")
+    if parsed > _MAX_UNSIGNED_ADDRESS:
+        raise ValueError(f"{field_name} must fit in an unsigned 64-bit address")
+    return parsed
+
+def _format_address(value: int, *, field_name: str) -> str:
+    if value < 0 or value > _MAX_UNSIGNED_ADDRESS:
+        raise ValueError(f"{field_name} must fit in an unsigned 64-bit address")
+    return f"0x{value:X}"
 
 
 def _encode_float_payload(value: Any, *, field_name: str, kind: str) -> str:
@@ -222,6 +252,96 @@ def _split_records(records: list[str], expected_parts: int) -> list[list[str]]:
         parts = record.split("|", expected_parts - 1)
         parsed.append(parts)
     return parsed
+
+def _module_basename(path: str) -> str:
+    return path.replace("\\", "/").rsplit("/", 1)[-1]
+
+def _parse_module_records(fields: dict[str, list[str]]) -> list[dict[str, Any]]:
+    modules = []
+    for module in _split_records(fields.get("module", []), 4):
+        if len(module) != 4:
+            continue
+        name, base, size, path = module
+        modules.append({"name": name, "base": base, "size": int(size), "path": path})
+    return modules
+
+def _resolve_module_record(modules: list[dict[str, Any]], module: str) -> dict[str, Any]:
+    module_query = module.strip()
+    if not module_query:
+        raise ValueError("module must not be empty")
+
+    matches: list[tuple[dict[str, Any], str]] = []
+    normalized_query = module_query.casefold()
+    for candidate in modules:
+        name = str(candidate["name"])
+        path = str(candidate["path"])
+        if name.casefold() == normalized_query:
+            matches.append((candidate, "name"))
+            continue
+        if path.casefold() == normalized_query:
+            matches.append((candidate, "path"))
+            continue
+        if _module_basename(path).casefold() == normalized_query:
+            matches.append((candidate, "basename"))
+
+    if not matches:
+        raise RuntimeError(f"module_not_found: no loaded module matched {module_query!r}")
+
+    if len(matches) > 1:
+        match_list = ", ".join(f"{match['name']}({match['base']})" for match, _ in matches)
+        raise RuntimeError(
+            f"module_ambiguous: multiple loaded modules matched {module_query!r}: {match_list}"
+        )
+
+    match, match_method = matches[0]
+    return {
+        "module_query": module_query,
+        "module_name": str(match["name"]),
+        "base_address": str(match["base"]),
+        "image_size": int(match["size"]),
+        "module_path": str(match["path"]),
+        "match_method": match_method,
+    }
+
+def _rebase_address_payload(
+    module_record: dict[str, Any],
+    *,
+    direction: str,
+    offset: Any = None,
+    address: Any = None,
+) -> dict[str, Any]:
+    normalized_direction = direction.strip().lower()
+    if normalized_direction not in {"rva_to_va", "va_to_rva"}:
+        raise ValueError("direction must be one of: rva_to_va, va_to_rva")
+
+    base_address = _coerce_address(module_record["base_address"], field_name="base_address")
+
+    if normalized_direction == "rva_to_va":
+        if offset is None or address is not None:
+            raise ValueError("rva_to_va requires offset and does not accept address")
+        offset_value = _coerce_address(offset, field_name="offset")
+        address_value = base_address + offset_value
+        if address_value > _MAX_UNSIGNED_ADDRESS:
+            raise ValueError("rebased address must fit in an unsigned 64-bit address")
+    else:
+        if address is None or offset is not None:
+            raise ValueError("va_to_rva requires address and does not accept offset")
+        address_value = _coerce_address(address, field_name="address")
+        if address_value < base_address:
+            raise ValueError("address must be greater than or equal to the module base address")
+        offset_value = address_value - base_address
+
+    return {
+        "direction": normalized_direction,
+        "module_query": module_record["module_query"],
+        "module_name": module_record["module_name"],
+        "base_address": module_record["base_address"],
+        "image_size": module_record["image_size"],
+        "module_path": module_record["module_path"],
+        "match_method": module_record["match_method"],
+        "offset": _format_address(offset_value, field_name="offset"),
+        "address": _format_address(address_value, field_name="address"),
+    }
 
 
 def _list_process_matches(process_name: str, exact_match: bool) -> list[dict[str, int | str]]:
@@ -558,16 +678,39 @@ def create_mcp(session_manager: SessionManager) -> FastMCP:
     @mcp.tool(description="Enumerate loaded modules in the target process with base addresses, image sizes, and paths. Requires both pid and process_name for stale-PID recovery.")
     async def list_modules(pid: int, process_name: str, dll_path: str | None = None) -> StructuredToolResult:
         fields = await request(pid, process_name, "list_modules", dll_path=dll_path)
-        modules = []
-        for module in _split_records(fields.get("module", []), 4):
-            if len(module) != 4:
-                continue
-            name, base, size, path = module
-            modules.append({"name": name, "base": base, "size": int(size), "path": path})
+        modules = _parse_module_records(fields)
         payload = {"module_count": int(fields["module_count"][0]), "modules": modules}
         if "enumeration_method" in fields:
             payload["enumeration_method"] = fields["enumeration_method"][0]
         return _structured_result(payload)
+
+    @mcp.tool(description="Resolve a loaded module to its base address, image size, and full path. Requires both pid and process_name for stale-PID recovery.")
+    async def get_module_base(
+        pid: int,
+        process_name: str,
+        module: str,
+        dll_path: str | None = None,
+    ) -> StructuredToolResult:
+        fields = await request(pid, process_name, "list_modules", dll_path=dll_path)
+        modules = _parse_module_records(fields)
+        return _structured_result(_resolve_module_record(modules, module))
+
+    @mcp.tool(description="Convert between module-relative offsets and absolute addresses for a loaded module. Requires both pid and process_name for stale-PID recovery.")
+    async def rebase_address(
+        pid: int,
+        process_name: str,
+        module: str,
+        direction: str,
+        offset: int | str | None = None,
+        address: int | str | None = None,
+        dll_path: str | None = None,
+    ) -> StructuredToolResult:
+        fields = await request(pid, process_name, "list_modules", dll_path=dll_path)
+        modules = _parse_module_records(fields)
+        module_record = _resolve_module_record(modules, module)
+        return _structured_result(
+            _rebase_address_payload(module_record, direction=direction, offset=offset, address=address)
+        )
 
     @mcp.tool(description="Scan readable committed memory in the target process for a byte pattern with optional wildcards. Requires both pid and process_name for stale-PID recovery.")
     async def pattern_scan(

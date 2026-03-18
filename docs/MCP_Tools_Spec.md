@@ -14,6 +14,8 @@ If an auto-injecting tool targets a process whose debugger pipe is not yet reach
 - `write_memory(pid, process_name, address, bytes_hex=None, text=None, encoding="utf-8", zero_terminate=False, verify=True, dll_path=None)`
 - `dereference(pid, process_name, address, depth=3, pointer_size=8, dll_path=None)`
 - `list_modules(pid, process_name, dll_path=None)`
+- `get_module_base(pid, process_name, module, dll_path=None)`
+- `rebase_address(pid, process_name, module, direction, offset=None, address=None, dll_path=None)`
 - `pattern_scan(pid, process_name, pattern, mask=None, target_offset=None, start_address=None, region_size=None, limit=32, dll_path=None)`
 - `create_aob_pattern(pid, process_name, address, max_bytes=64, include_mask=False, include_offset=False, dll_path=None)`
 - `watch_address(pid, process_name, address, size, interval_ms=250, watch_id=None, dll_path=None)`
@@ -34,6 +36,11 @@ If an auto-injecting tool targets a process whose debugger pipe is not yet reach
 - Auto-injecting tools now require both `pid` and `process_name`. The pipe protocol remains PID-based; `process_name` is used only as an exact-match fallback when the supplied PID no longer attaches cleanly.
 - Exact process-name fallback fails if zero or multiple matching processes are found.
 - `write_memory` accepts either `bytes_hex` or `text`; text payloads are encoded as `ascii`, `utf-8`, or `utf-16-le` before the native write.
+- `get_module_base` resolves one loaded module and returns `module_name`, `base_address`, `image_size`, `module_path`, and `match_method`.
+- `get_module_base` and `rebase_address` match modules case-insensitively by module name, full path, or basename. Ambiguous matches fail instead of choosing an arbitrary module.
+- `rebase_address` accepts `direction="rva_to_va"` or `direction="va_to_rva"`.
+- `rebase_address(direction="rva_to_va", ...)` requires `offset` and returns the computed absolute `address` together with the normalized `offset`.
+- `rebase_address(direction="va_to_rva", ...)` requires `address` and returns the computed module-relative `offset` together with the normalized `address`.
 - Pattern strings accept wildcard bytes as `??`.
 - `pattern_scan` also accepts an optional `mask` string of `x` and `?` characters. The mask length must match the pattern byte count after tokenization.
 - `pattern_scan` may be called with both a wildcard AOB string and a `mask`, but the request is only valid if every `??` byte also maps to a `?` mask position.

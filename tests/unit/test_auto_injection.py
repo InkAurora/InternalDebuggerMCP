@@ -19,7 +19,14 @@ if str(MCP_SRC) not in sys.path:
 from mcp_server.injection import InjectionError, eject_debugger, inject_debugger  # noqa: E402
 from mcp_server.package_layout import RuntimeLayout  # noqa: E402
 from mcp_server.pipe_client import PipeResponse  # noqa: E402
-from mcp_server.tools import _prepare_invoke_fields, _prepare_write_payload, _send_native_request  # noqa: E402
+from mcp_server.tools import (  # noqa: E402
+    _coerce_address,
+    _prepare_invoke_fields,
+    _prepare_write_payload,
+    _rebase_address_payload,
+    _resolve_module_record,
+    _send_native_request,
+)
 
 
 def _make_layout(package_root: Path) -> RuntimeLayout:
@@ -88,6 +95,90 @@ class _FakeSessionManager:
 
 
 class TestAutoInjection(unittest.TestCase):
+    def test_resolve_module_record_supports_name_path_and_basename_matching(self) -> None:
+        modules = [
+            {
+                "name": "TestTarget.exe",
+                "base": "0x140000000",
+                "size": 4096,
+                "path": r"C:\Temp\TestTarget.exe",
+            },
+            {
+                "name": "FriendlyAlias.dll",
+                "base": "0x180000000",
+                "size": 8192,
+                "path": r"C:\Temp\BasenameOnly.dll",
+            },
+        ]
+
+        by_name = _resolve_module_record(modules, "testtarget.exe")
+        by_path = _resolve_module_record(modules, r"c:\temp\testtarget.exe")
+        by_basename = _resolve_module_record(modules, "basenameonly.dll")
+
+        self.assertEqual(by_name["module_name"], "TestTarget.exe")
+        self.assertEqual(by_name["match_method"], "name")
+        self.assertEqual(by_path["match_method"], "path")
+        self.assertEqual(by_basename["module_name"], "FriendlyAlias.dll")
+        self.assertEqual(by_basename["match_method"], "basename")
+
+    def test_resolve_module_record_rejects_missing_and_ambiguous_matches(self) -> None:
+        with self.assertRaises(RuntimeError) as missing_error:
+            _resolve_module_record([], "missing.dll")
+        self.assertIn("module_not_found", str(missing_error.exception))
+
+        modules = [
+            {"name": "Dup.dll", "base": "0x1000", "size": 16, "path": r"C:\One\Dup.dll"},
+            {"name": "Dup.dll", "base": "0x2000", "size": 16, "path": r"C:\Two\Dup.dll"},
+        ]
+        with self.assertRaises(RuntimeError) as ambiguous_error:
+            _resolve_module_record(modules, "dup.dll")
+        self.assertIn("module_ambiguous", str(ambiguous_error.exception))
+
+    def test_coerce_address_accepts_decimal_and_hex_inputs(self) -> None:
+        self.assertEqual(_coerce_address(4096, field_name="address"), 4096)
+        self.assertEqual(_coerce_address("4096", field_name="address"), 4096)
+        self.assertEqual(_coerce_address("0x1000", field_name="address"), 4096)
+
+        with self.assertRaises(ValueError):
+            _coerce_address("", field_name="address")
+        with self.assertRaises(ValueError):
+            _coerce_address(-1, field_name="address")
+
+    def test_rebase_address_payload_supports_both_directions(self) -> None:
+        module_record = {
+            "module_query": "TestTarget.exe",
+            "module_name": "TestTarget.exe",
+            "base_address": "0x140000000",
+            "image_size": 4096,
+            "module_path": r"C:\Temp\TestTarget.exe",
+            "match_method": "name",
+        }
+
+        va_payload = _rebase_address_payload(module_record, direction="rva_to_va", offset="0x1234")
+        rva_payload = _rebase_address_payload(module_record, direction="va_to_rva", address="0x140001234")
+
+        self.assertEqual(va_payload["offset"], "0x1234")
+        self.assertEqual(va_payload["address"], "0x140001234")
+        self.assertEqual(rva_payload["offset"], "0x1234")
+        self.assertEqual(rva_payload["address"], "0x140001234")
+
+    def test_rebase_address_payload_rejects_invalid_direction_and_underflow(self) -> None:
+        module_record = {
+            "module_query": "TestTarget.exe",
+            "module_name": "TestTarget.exe",
+            "base_address": "0x140000000",
+            "image_size": 4096,
+            "module_path": r"C:\Temp\TestTarget.exe",
+            "match_method": "name",
+        }
+
+        with self.assertRaises(ValueError):
+            _rebase_address_payload(module_record, direction="sideways", offset=1)
+        with self.assertRaises(ValueError):
+            _rebase_address_payload(module_record, direction="rva_to_va", address="0x140000000")
+        with self.assertRaises(ValueError):
+            _rebase_address_payload(module_record, direction="va_to_rva", address="0x13FFFFFFF")
+
     def test_prepare_write_payload_encodes_text_and_hex(self) -> None:
         self.assertEqual(
             _prepare_write_payload(bytes_hex=None, text="AB", encoding="utf-8", zero_terminate=True),

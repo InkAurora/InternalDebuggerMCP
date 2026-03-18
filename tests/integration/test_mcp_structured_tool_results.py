@@ -198,6 +198,101 @@ class McpStructuredToolResultsTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(math.isclose(float_invoke_result.structuredContent["return_value"], 9.25, rel_tol=1e-12))
         self.assertIsInstance(float_invoke_result.structuredContent["return_bits"], int)
 
+    async def test_get_module_base_and_rebase_address_return_structured_content(self) -> None:
+        target_path = REPO_ROOT / "artifacts" / "Release" / "x64" / "TestTarget" / "TestTarget.exe"
+        if not target_path.exists():
+            raise unittest.SkipTest(f"Missing build artifact: {target_path}")
+
+        target = subprocess.Popen(
+            [str(target_path)],
+            cwd=REPO_ROOT,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            bufsize=1,
+        )
+        assert target.stdout is not None
+        symbols = _read_target_startup(target)
+
+        server = StdioServerParameters(
+            command=sys.executable,
+            args=[str(MCP_SRC / "launch.py")],
+            cwd=str(MCP_SRC),
+            env={"PYTHONUTF8": "1", "PYTHONUNBUFFERED": "1"},
+        )
+
+        try:
+            async with stdio_client(server) as (read_stream, write_stream):
+                async with ClientSession(read_stream, write_stream) as session:
+                    await session.initialize()
+                    module_result = await session.call_tool(
+                        "get_module_base",
+                        {
+                            "pid": target.pid,
+                            "process_name": TARGET_PROCESS_NAME,
+                            "module": str(target_path),
+                        },
+                    )
+
+                    assert module_result.structuredContent is not None
+                    expected_offset = int(symbols["g_write_target"], 16) - int(
+                        module_result.structuredContent["base_address"], 16
+                    )
+
+                    va_to_rva_result = await session.call_tool(
+                        "rebase_address",
+                        {
+                            "pid": target.pid,
+                            "process_name": TARGET_PROCESS_NAME,
+                            "module": "TestTarget.exe",
+                            "direction": "va_to_rva",
+                            "address": symbols["g_write_target"],
+                        },
+                    )
+                    rva_to_va_result = await session.call_tool(
+                        "rebase_address",
+                        {
+                            "pid": target.pid,
+                            "process_name": TARGET_PROCESS_NAME,
+                            "module": "TestTarget.exe",
+                            "direction": "rva_to_va",
+                            "offset": f"0x{expected_offset:X}",
+                        },
+                    )
+        finally:
+            if target.poll() is None:
+                target.terminate()
+                try:
+                    target.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    target.kill()
+                    target.wait(timeout=5)
+            if target.stdout is not None:
+                target.stdout.close()
+
+        self.assertFalse(module_result.isError)
+        self.assertEqual(module_result.content, [])
+        self.assertIsNotNone(module_result.structuredContent)
+        assert module_result.structuredContent is not None
+        self.assertEqual(module_result.structuredContent["module_name"], "TestTarget.exe")
+        self.assertEqual(module_result.structuredContent["match_method"], "path")
+
+        self.assertFalse(va_to_rva_result.isError)
+        self.assertEqual(va_to_rva_result.content, [])
+        self.assertIsNotNone(va_to_rva_result.structuredContent)
+        assert va_to_rva_result.structuredContent is not None
+        self.assertEqual(va_to_rva_result.structuredContent["direction"], "va_to_rva")
+        self.assertEqual(va_to_rva_result.structuredContent["offset"], f"0x{expected_offset:X}")
+        self.assertEqual(va_to_rva_result.structuredContent["address"].lower(), symbols["g_write_target"].lower())
+
+        self.assertFalse(rva_to_va_result.isError)
+        self.assertEqual(rva_to_va_result.content, [])
+        self.assertIsNotNone(rva_to_va_result.structuredContent)
+        assert rva_to_va_result.structuredContent is not None
+        self.assertEqual(rva_to_va_result.structuredContent["direction"], "rva_to_va")
+        self.assertEqual(rva_to_va_result.structuredContent["offset"], f"0x{expected_offset:X}")
+        self.assertEqual(rva_to_va_result.structuredContent["address"].lower(), symbols["g_write_target"].lower())
+
     async def test_eject_debugger_tool_and_server_shutdown_remove_the_debugger_dll(self) -> None:
         target_path = REPO_ROOT / "artifacts" / "Release" / "x64" / "TestTarget" / "TestTarget.exe"
         if not target_path.exists():
