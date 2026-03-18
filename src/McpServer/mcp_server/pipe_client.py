@@ -83,6 +83,16 @@ class NativeRequestError(RuntimeError):
         self.code = code
         self.detail = detail
         self.response = response
+        self.fields = dict(response.fields) if response is not None else {"status": ["error"], "code": [code], "detail": [detail]}
+
+    def one(self, key: str, default: str | None = None) -> str | None:
+        values = self.fields.get(key)
+        if not values:
+            return default
+        return values[0]
+
+    def many(self, key: str) -> list[str]:
+        return list(self.fields.get(key, []))
 
 
 @dataclass(slots=True)

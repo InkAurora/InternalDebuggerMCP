@@ -266,6 +266,170 @@ void PrepareInvokeCall(
     return message;
 }
 
+[[nodiscard]] std::string DescribeMemoryState(const DWORD state) {
+    switch (state) {
+    case MEM_COMMIT:
+        return "MEM_COMMIT";
+    case MEM_FREE:
+        return "MEM_FREE";
+    case MEM_RESERVE:
+        return "MEM_RESERVE";
+    default:
+        return std::format("0x{:X}", state);
+    }
+}
+
+[[nodiscard]] std::string DescribeMemoryProtection(const DWORD protect) {
+    if (protect == 0) {
+        return "0x0";
+    }
+
+    std::vector<std::string> flags;
+    switch (protect & 0xFFU) {
+    case PAGE_EXECUTE:
+        flags.emplace_back("PAGE_EXECUTE");
+        break;
+    case PAGE_EXECUTE_READ:
+        flags.emplace_back("PAGE_EXECUTE_READ");
+        break;
+    case PAGE_EXECUTE_READWRITE:
+        flags.emplace_back("PAGE_EXECUTE_READWRITE");
+        break;
+    case PAGE_EXECUTE_WRITECOPY:
+        flags.emplace_back("PAGE_EXECUTE_WRITECOPY");
+        break;
+    case PAGE_NOACCESS:
+        flags.emplace_back("PAGE_NOACCESS");
+        break;
+    case PAGE_READONLY:
+        flags.emplace_back("PAGE_READONLY");
+        break;
+    case PAGE_READWRITE:
+        flags.emplace_back("PAGE_READWRITE");
+        break;
+    case PAGE_WRITECOPY:
+        flags.emplace_back("PAGE_WRITECOPY");
+        break;
+    default:
+        flags.emplace_back(std::format("0x{:X}", protect & 0xFFU));
+        break;
+    }
+
+    if ((protect & PAGE_GUARD) != 0) {
+        flags.emplace_back("PAGE_GUARD");
+    }
+    if ((protect & PAGE_NOCACHE) != 0) {
+        flags.emplace_back("PAGE_NOCACHE");
+    }
+    if ((protect & PAGE_WRITECOMBINE) != 0) {
+        flags.emplace_back("PAGE_WRITECOMBINE");
+    }
+
+    return Join(flags, "|");
+}
+
+[[nodiscard]] std::string DescribeMemoryAccessFailure(
+    const std::string_view action,
+    const MemoryAccessDiagnostics& diagnostics) {
+    const auto range = std::format("{} ({} bytes)", ToHex(diagnostics.address), diagnostics.size);
+    const auto region = diagnostics.hasRegion
+        ? std::format(
+            "{} (size {}, state {}, protect {})",
+            ToHex(diagnostics.regionBase),
+            diagnostics.regionSize,
+            DescribeMemoryState(diagnostics.state),
+            DescribeMemoryProtection(diagnostics.protect))
+        : std::string("<unavailable>");
+
+    if (diagnostics.reason == "invalid_address") {
+        return std::format("unable to {}: address {} is null or invalid", action, ToHex(diagnostics.address));
+    }
+    if (diagnostics.reason == "virtual_query_failed") {
+        return std::format(
+            "unable to {} {}: VirtualQuery failed with {}",
+            action,
+            range,
+            DescribeWin32Error(diagnostics.queryError));
+    }
+    if (diagnostics.reason == "region_not_committed") {
+        return std::format(
+            "unable to {} {}: region {} is not committed",
+            action,
+            range,
+            region);
+    }
+    if (diagnostics.reason == "guarded_page") {
+        return std::format(
+            "unable to {} {}: region {} is guarded",
+            action,
+            range,
+            region);
+    }
+    if (diagnostics.reason == "no_access") {
+        return std::format(
+            "unable to {} {}: region {} has no access",
+            action,
+            range,
+            region);
+    }
+    if (diagnostics.reason == "protection_not_readable") {
+        return std::format(
+            "unable to {} {}: region {} is not readable",
+            action,
+            range,
+            region);
+    }
+    if (diagnostics.reason == "protection_not_writable") {
+        return std::format(
+            "unable to {} {}: region {} is not writable",
+            action,
+            range,
+            region);
+    }
+    if (diagnostics.reason == "range_outside_region") {
+        return std::format(
+            "unable to {} {}: requested range crosses region boundary {}",
+            action,
+            range,
+            region);
+    }
+    if (diagnostics.reason == "copy_exception") {
+        return std::format(
+            "unable to {} {}: structured exception {} occurred during memory copy",
+            action,
+            range,
+            std::format("0x{:08X}", diagnostics.copyExceptionCode));
+    }
+
+    return std::format("unable to {} {}", action, range);
+}
+
+[[nodiscard]] std::vector<MessageField> BuildMemoryAccessErrorFields(const MemoryAccessDiagnostics& diagnostics) {
+    std::vector<MessageField> fields{
+        {"address", ToHex(diagnostics.address)},
+        {"requested_size", std::to_string(diagnostics.size)},
+    };
+
+    if (!diagnostics.reason.empty()) {
+        fields.emplace_back("memory_reason", diagnostics.reason);
+    }
+    if (diagnostics.hasRegion) {
+        fields.emplace_back("region_base", ToHex(diagnostics.regionBase));
+        fields.emplace_back("region_size", std::to_string(diagnostics.regionSize));
+        fields.emplace_back("region_state", DescribeMemoryState(diagnostics.state));
+        fields.emplace_back("region_protect", DescribeMemoryProtection(diagnostics.protect));
+    }
+    if (diagnostics.queryError != ERROR_SUCCESS) {
+        fields.emplace_back("win32_error", std::to_string(diagnostics.queryError));
+        fields.emplace_back("win32_error_detail", DescribeWin32Error(diagnostics.queryError));
+    }
+    if (diagnostics.copyExceptionCode != ERROR_SUCCESS) {
+        fields.emplace_back("copy_exception_code", std::format("0x{:08X}", diagnostics.copyExceptionCode));
+    }
+
+    return fields;
+}
+
 [[nodiscard]] std::string BaseName(std::string_view path) {
     const auto lastSlash = path.find_last_of("\\/");
     if (lastSlash == std::string_view::npos) {
@@ -736,8 +900,12 @@ std::string DebuggerService::HandleReadMemory(const ParsedMessage& message) cons
     }
 
     std::vector<std::uint8_t> bytes;
-    if (!memoryReader_.ReadBytes(*address, static_cast<std::size_t>(*size), bytes)) {
-        return MakeError("memory_read_failed", "unable to read requested range");
+    MemoryAccessDiagnostics diagnostics;
+    if (!memoryReader_.ReadBytes(*address, static_cast<std::size_t>(*size), bytes, &diagnostics)) {
+        return MakeError(
+            "memory_read_failed",
+            DescribeMemoryAccessFailure("read memory", diagnostics),
+            BuildMemoryAccessErrorFields(diagnostics));
     }
 
     return MakeOk({
@@ -1076,8 +1244,12 @@ std::string DebuggerService::HandleDisassemble(const ParsedMessage& message) con
     }
 
     std::vector<std::uint8_t> bytes;
-    if (!memoryReader_.ReadBytes(*address, static_cast<std::size_t>(*size), bytes)) {
-        return MakeError("memory_read_failed", "unable to read instruction bytes");
+    MemoryAccessDiagnostics diagnostics;
+    if (!memoryReader_.ReadBytes(*address, static_cast<std::size_t>(*size), bytes, &diagnostics)) {
+        return MakeError(
+            "memory_read_failed",
+            DescribeMemoryAccessFailure("read instruction bytes", diagnostics),
+            BuildMemoryAccessErrorFields(diagnostics));
     }
 
     const auto instructions = disassembler_.Disassemble(
@@ -1169,12 +1341,17 @@ std::string DebuggerService::HandleRegisters() const {
     });
 }
 
-std::string DebuggerService::MakeError(const std::string& code, const std::string& detail) {
-    return BuildMessage({
+std::string DebuggerService::MakeError(
+    const std::string& code,
+    const std::string& detail,
+    std::vector<MessageField> extraFields) {
+    std::vector<MessageField> fields{
         {"status", "error"},
         {"code", code},
         {"detail", detail},
-    });
+    };
+    fields.insert(fields.end(), extraFields.begin(), extraFields.end());
+    return BuildMessage(fields);
 }
 
 std::string DebuggerService::MakeOk(std::vector<MessageField> fields) {

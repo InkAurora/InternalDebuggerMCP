@@ -30,10 +30,18 @@ _MAX_UNSIGNED_ADDRESS = (1 << 64) - 1
 
 
 class _NativeRequestFailure(RuntimeError):
-    def __init__(self, code: str, detail: str, *, allow_name_fallback: bool = False) -> None:
+    def __init__(
+        self,
+        code: str,
+        detail: str,
+        *,
+        diagnostics: dict[str, list[str]] | None = None,
+        allow_name_fallback: bool = False,
+    ) -> None:
         super().__init__(f"{code}: {detail}")
         self.code = code
         self.detail = detail
+        self.diagnostics = diagnostics or {}
         self.allow_name_fallback = allow_name_fallback
 
 
@@ -400,11 +408,37 @@ def _ejection_payload(result: EjectionResult, *, cleared_session: bool) -> dict[
 
 
 def _format_native_failure(error: _NativeRequestFailure) -> str:
-    return f"{error.code}: {error.detail}"
+    diagnostic_fields: list[tuple[str, str]] = []
+    for key, label in (
+        ("address", "address"),
+        ("requested_size", "requested_size"),
+        ("memory_reason", "reason"),
+        ("region_base", "region_base"),
+        ("region_size", "region_size"),
+        ("region_state", "region_state"),
+        ("region_protect", "region_protect"),
+        ("copy_exception_code", "copy_exception_code"),
+        ("win32_error_detail", "win32_error"),
+    ):
+        values = error.diagnostics.get(key)
+        if values and values[0]:
+            diagnostic_fields.append((label, values[0]))
+
+    if not diagnostic_fields:
+        return f"{error.code}: {error.detail}"
+
+    formatted = ", ".join(f"{label}={value}" for label, value in diagnostic_fields)
+    return f"{error.code}: {error.detail} ({formatted})"
 
 
-def _raise_native_failure(code: str, detail: str, *, allow_name_fallback: bool = False) -> None:
-    raise _NativeRequestFailure(code, detail, allow_name_fallback=allow_name_fallback)
+def _raise_native_failure(
+    code: str,
+    detail: str,
+    *,
+    diagnostics: dict[str, list[str]] | None = None,
+    allow_name_fallback: bool = False,
+) -> None:
+    raise _NativeRequestFailure(code, detail, diagnostics=diagnostics, allow_name_fallback=allow_name_fallback)
 
 
 def _raise_runtime_for_native_error(session_manager: SessionManager, pid: int, error: NativeRequestError) -> None:
@@ -413,7 +447,7 @@ def _raise_runtime_for_native_error(session_manager: SessionManager, pid: int, e
     if error.code == "server_stopping":
         session_manager.reset(pid)
         _raise_native_failure("server_stopping", "the target debugger is restarting or shutting down; retry after the pipe recovers")
-    _raise_native_failure(error.code, error.detail)
+    _raise_native_failure(error.code, error.detail, diagnostics=error.fields)
 
 
 def _request_once(session_manager: SessionManager, pid: int, command: str, **fields: Any) -> dict[str, list[str]]:

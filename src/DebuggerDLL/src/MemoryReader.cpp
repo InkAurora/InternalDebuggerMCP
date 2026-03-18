@@ -9,6 +9,48 @@ namespace idmcp {
 
 namespace {
 
+void ResetDiagnostics(
+    MemoryAccessDiagnostics* diagnostics,
+    const std::uintptr_t address,
+    const std::size_t size) {
+    if (diagnostics == nullptr) {
+        return;
+    }
+
+    *diagnostics = {};
+    diagnostics->address = address;
+    diagnostics->size = size;
+}
+
+void SetRegionDiagnostics(MemoryAccessDiagnostics* diagnostics, const MEMORY_BASIC_INFORMATION& mbi) {
+    if (diagnostics == nullptr) {
+        return;
+    }
+
+    diagnostics->hasRegion = true;
+    diagnostics->regionBase = reinterpret_cast<std::uintptr_t>(mbi.BaseAddress);
+    diagnostics->regionSize = mbi.RegionSize;
+    diagnostics->state = mbi.State;
+    diagnostics->protect = mbi.Protect;
+}
+
+[[nodiscard]] bool RangeFitsRegion(
+    const std::uintptr_t address,
+    const std::size_t size,
+    const std::uintptr_t regionStart,
+    const std::size_t regionSize) {
+    if (address < regionStart) {
+        return false;
+    }
+
+    const auto offset = address - regionStart;
+    if (offset > regionSize) {
+        return false;
+    }
+
+    return size <= regionSize - offset;
+}
+
 [[nodiscard]] bool IsReadableProtection(DWORD protect) {
     if ((protect & PAGE_GUARD) != 0 || (protect & PAGE_NOACCESS) != 0) {
         return false;
@@ -39,17 +81,39 @@ namespace {
 [[nodiscard]] bool IsWithinCommittedRegion(
     const std::uintptr_t address,
     const std::size_t size,
-    const DWORD requiredProtect) {
-    if (address == 0 || size == 0) {
+    const DWORD requiredProtect,
+    MemoryAccessDiagnostics* diagnostics) {
+    ResetDiagnostics(diagnostics, address, size);
+
+    if (address == 0) {
+        if (diagnostics != nullptr) {
+            diagnostics->reason = "invalid_address";
+        }
+        return false;
+    }
+    if (size == 0) {
+        if (diagnostics != nullptr) {
+            diagnostics->reason = "invalid_size";
+        }
         return false;
     }
 
     MEMORY_BASIC_INFORMATION mbi{};
+    SetLastError(ERROR_SUCCESS);
     if (VirtualQuery(reinterpret_cast<LPCVOID>(address), &mbi, sizeof(mbi)) != sizeof(mbi)) {
+        if (diagnostics != nullptr) {
+            diagnostics->reason = "virtual_query_failed";
+            diagnostics->queryError = GetLastError();
+        }
         return false;
     }
 
+    SetRegionDiagnostics(diagnostics, mbi);
+
     if (mbi.State != MEM_COMMIT) {
+        if (diagnostics != nullptr) {
+            diagnostics->reason = "region_not_committed";
+        }
         return false;
     }
 
@@ -57,38 +121,67 @@ namespace {
         ? IsReadableProtection(mbi.Protect)
         : IsWritableProtection(mbi.Protect);
     if (!protectOk) {
+        if (diagnostics != nullptr) {
+            if ((mbi.Protect & PAGE_GUARD) != 0) {
+                diagnostics->reason = "guarded_page";
+            } else if ((mbi.Protect & PAGE_NOACCESS) != 0) {
+                diagnostics->reason = "no_access";
+            } else {
+                diagnostics->reason = requiredProtect == PAGE_READONLY
+                    ? "protection_not_readable"
+                    : "protection_not_writable";
+            }
+        }
         return false;
     }
 
     const auto regionStart = reinterpret_cast<std::uintptr_t>(mbi.BaseAddress);
-    const auto regionEnd = regionStart + mbi.RegionSize;
-    return address >= regionStart && address + size <= regionEnd;
+    if (!RangeFitsRegion(address, size, regionStart, mbi.RegionSize)) {
+        if (diagnostics != nullptr) {
+            diagnostics->reason = "range_outside_region";
+        }
+        return false;
+    }
+
+    return true;
 }
 
 }  // namespace
 
-bool MemoryReader::IsReadable(const std::uintptr_t address, const std::size_t size) const {
-    return IsWithinCommittedRegion(address, size, PAGE_READONLY);
+bool MemoryReader::IsReadable(
+    const std::uintptr_t address,
+    const std::size_t size,
+    MemoryAccessDiagnostics* diagnostics) const {
+    return IsWithinCommittedRegion(address, size, PAGE_READONLY, diagnostics);
 }
 
-bool MemoryReader::IsWritable(const std::uintptr_t address, const std::size_t size) const {
-    return IsWithinCommittedRegion(address, size, PAGE_READWRITE);
+bool MemoryReader::IsWritable(
+    const std::uintptr_t address,
+    const std::size_t size,
+    MemoryAccessDiagnostics* diagnostics) const {
+    return IsWithinCommittedRegion(address, size, PAGE_READWRITE, diagnostics);
 }
 
 bool MemoryReader::ReadBytes(
     const std::uintptr_t address,
     const std::size_t size,
-    std::vector<std::uint8_t>& output) const {
+    std::vector<std::uint8_t>& output,
+    MemoryAccessDiagnostics* diagnostics) const {
     output.clear();
-    if (!IsReadable(address, size)) {
+    if (!IsReadable(address, size, diagnostics)) {
         return false;
     }
 
     output.resize(size);
+    DWORD exceptionCode = ERROR_SUCCESS;
     __try {
         std::memcpy(output.data(), reinterpret_cast<const void*>(address), size);
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    } __except ((exceptionCode = GetExceptionCode()), EXCEPTION_EXECUTE_HANDLER) {
         output.clear();
+        if (diagnostics != nullptr) {
+            diagnostics->reason = "copy_exception";
+            diagnostics->copyExceptionCode = exceptionCode;
+        }
         return false;
     }
     return true;
@@ -116,14 +209,29 @@ bool MemoryReader::ReadPointer(
     return true;
 }
 
-bool MemoryReader::WriteBytes(const std::uintptr_t address, const std::vector<std::uint8_t>& bytes) const {
-    if (bytes.empty() || !IsWritable(address, bytes.size())) {
+bool MemoryReader::WriteBytes(
+    const std::uintptr_t address,
+    const std::vector<std::uint8_t>& bytes,
+    MemoryAccessDiagnostics* diagnostics) const {
+    if (bytes.empty()) {
+        ResetDiagnostics(diagnostics, address, bytes.size());
+        if (diagnostics != nullptr) {
+            diagnostics->reason = "invalid_size";
+        }
+        return false;
+    }
+    if (!IsWritable(address, bytes.size(), diagnostics)) {
         return false;
     }
 
+    DWORD exceptionCode = ERROR_SUCCESS;
     __try {
         std::memcpy(reinterpret_cast<void*>(address), bytes.data(), bytes.size());
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    } __except ((exceptionCode = GetExceptionCode()), EXCEPTION_EXECUTE_HANDLER) {
+        if (diagnostics != nullptr) {
+            diagnostics->reason = "copy_exception";
+            diagnostics->copyExceptionCode = exceptionCode;
+        }
         return false;
     }
     return true;

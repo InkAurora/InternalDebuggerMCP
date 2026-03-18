@@ -56,7 +56,10 @@ private:
     [[nodiscard]] std::string HandleInvokeFunction(const ParsedMessage& message) const;
     [[nodiscard]] std::string HandleRegisters() const;
 
-    [[nodiscard]] static std::string MakeError(const std::string& code, const std::string& detail);
+    [[nodiscard]] static std::string MakeError(
+        const std::string& code,
+        const std::string& detail,
+        std::vector<MessageField> extraFields = {});
     [[nodiscard]] static std::string MakeOk(std::vector<MessageField> fields);
     [[nodiscard]] static std::string MakeWatchId(std::uintptr_t address);
 

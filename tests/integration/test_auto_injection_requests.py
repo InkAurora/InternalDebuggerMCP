@@ -21,6 +21,7 @@ if str(MCP_SRC) not in sys.path:
     sys.path.insert(0, str(MCP_SRC))
 
 from mcp_server.session_manager import SessionManager  # noqa: E402
+from mcp_server.pipe_client import NativeRequestError, PipeClient  # noqa: E402
 from mcp_server.tools import _send_native_request  # noqa: E402
 
 
@@ -191,6 +192,38 @@ class AutoInjectionRequestsTest(unittest.TestCase):
         self.assertEqual(write_fields["bytes_written"][0], "8")
         self.assertEqual(write_fields["read_back"][0], payload)
         self.assertEqual(read_fields["bytes"][0], payload)
+
+    def test_memory_read_failures_return_descriptive_native_fields(self) -> None:
+        _send_native_request(self.session_manager, self.target_pid, "ping", process_name=TARGET_PROCESS_NAME)
+
+        response = PipeClient(self.target_pid, timeout_ms=5000).request("read_memory", address="0x1", size=16)
+
+        with self.assertRaises(NativeRequestError) as context:
+            response.raise_for_error()
+
+        self.assertEqual(context.exception.code, "memory_read_failed")
+        self.assertEqual(context.exception.one("address"), "0x1")
+        self.assertEqual(context.exception.one("requested_size"), "16")
+        self.assertEqual(context.exception.one("memory_reason"), "region_not_committed")
+        self.assertEqual(context.exception.one("region_state"), "MEM_FREE")
+
+    def test_memory_read_failures_include_descriptive_runtime_error_context(self) -> None:
+        with self.assertRaises(RuntimeError) as context:
+            _send_native_request(
+                self.session_manager,
+                self.target_pid,
+                "disassemble",
+                process_name=TARGET_PROCESS_NAME,
+                address="0x1",
+                size=16,
+                max_instructions=4,
+            )
+
+        message = str(context.exception)
+        self.assertIn("memory_read_failed", message)
+        self.assertIn("address=0x1", message)
+        self.assertIn("requested_size=16", message)
+        self.assertIn("reason=region_not_committed", message)
 
     def test_invoke_function_supports_raw_addresses_exports_and_output_buffers(self) -> None:
         raw_fields = _send_native_request(
