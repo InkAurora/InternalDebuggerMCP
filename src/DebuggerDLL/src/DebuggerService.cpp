@@ -22,8 +22,30 @@ namespace idmcp {
 namespace {
 
 constexpr std::string_view kCreateAobPatternReplacementTool = "create_signature";
-constexpr std::string_view kCreateAobPatternDeprecationMessage =
-    "create_aob_pattern is deprecated; prefer create_signature unless you still require mask, pattern_start, or target_offset semantics.";
+constexpr std::string_view kCreateAobPatternRemovalDetail =
+    "create_aob_pattern has been removed; use create_signature instead.";
+
+[[nodiscard]] std::string FormatPatternText(const std::vector<PatternByte>& pattern) {
+    std::string formatted;
+    formatted.reserve(pattern.size() * 3);
+    for (std::size_t index = 0; index < pattern.size(); ++index) {
+        if (index != 0) {
+            formatted.push_back(' ');
+        }
+        if (pattern[index].wildcard) {
+            formatted += "??";
+            continue;
+        }
+        formatted += std::format("{:02X}", pattern[index].value);
+    }
+    return formatted;
+}
+
+[[nodiscard]] std::size_t CountPatternWildcards(const std::vector<PatternByte>& pattern) {
+    return static_cast<std::size_t>(std::count_if(pattern.begin(), pattern.end(), [](const PatternByte& byte) {
+        return byte.wildcard;
+    }));
+}
 
 struct ModuleRecord {
     std::string name;
@@ -730,8 +752,7 @@ DebuggerService& DebuggerService::Instance() {
 DebuggerService::DebuggerService()
     : patternScanner_(memoryReader_),
       watchManager_(memoryReader_),
-      patternGenerator_(memoryReader_, patternScanner_, disassembler_),
-    signatureGenerator_(memoryReader_, patternScanner_, disassembler_),
+            signatureGenerator_(memoryReader_, patternScanner_, disassembler_),
       accessWatchManager_(memoryReader_, disassembler_) {}
 
 DebuggerService::~DebuggerService() = default;
@@ -867,9 +888,11 @@ std::string DebuggerService::Dispatch(const std::string& request) {
     if (*command == "pattern_scan") {
         return HandlePatternScan(message);
     }
-    // Deprecated compatibility path. Keep this command available while callers migrate to create_signature.
     if (*command == "create_aob_pattern") {
-        return HandleCreateAobPattern(message);
+        return MakeError(
+            "deprecated_tool",
+            std::string(kCreateAobPatternRemovalDetail),
+            {{"command", "create_aob_pattern"}, {"replacement_tool", std::string(kCreateAobPatternReplacementTool)}});
     }
     if (*command == "create_signature") {
         return HandleCreateSignature(message);
@@ -1096,56 +1119,6 @@ std::string DebuggerService::HandlePatternScan(const ParsedMessage& message) con
     return MakeOk(std::move(fields));
 }
 
-// Deprecated compatibility handler. Preserve the legacy result shape until create_aob_pattern is removed.
-std::string DebuggerService::HandleCreateAobPattern(const ParsedMessage& message) const {
-    const auto address = ParseAddress(message.GetFirst("address").value_or(""));
-    const auto maxBytes = ParseUnsigned(message.GetFirst("max_bytes").value_or(std::to_string(kDefaultGeneratedPatternBytes)));
-    const auto includeMask = ParseBool(message.GetFirst("include_mask").value_or("false")).value_or(false);
-    const auto includeOffset = ParseBool(message.GetFirst("include_offset").value_or("false")).value_or(false);
-    if (!address.has_value() || !maxBytes.has_value()) {
-        return MakeError("invalid_arguments", "address and max_bytes are required");
-    }
-
-    GeneratedPatternResult result{};
-    std::string error;
-    MemoryAccessDiagnostics diagnostics;
-    if (!patternGenerator_.Generate(*address, static_cast<std::size_t>(*maxBytes), result, error, &diagnostics)) {
-        if (error == "memory_read_failed") {
-            auto fields = BuildMemoryAccessErrorFields(diagnostics);
-            fields.emplace_back("requested_max_bytes", std::to_string(*maxBytes));
-            return MakeError(
-                error,
-                DescribeMemoryAccessFailure("generate AOB pattern", diagnostics),
-                std::move(fields));
-        }
-
-        return MakeError(
-            error,
-            std::format("unable to generate a unique AOB pattern at {} within {} bytes", ToHex(*address), *maxBytes),
-            BuildRequestedAddressFields(*address, {{"requested_max_bytes", std::to_string(*maxBytes)}}));
-    }
-
-    std::vector<MessageField> fields{
-        {"address", ToHex(result.address)},
-        {"pattern", PatternGenerator::FormatPattern(result.pattern)},
-        {"pattern_start", ToHex(result.patternStart)},
-        {"match_count", std::to_string(result.matchCount)},
-        {"byte_count", std::to_string(result.pattern.size())},
-        {"wildcard_count", std::to_string(PatternGenerator::CountWildcards(result.pattern))},
-        {"deprecated", "1"},
-        {"replacement_tool", std::string(kCreateAobPatternReplacementTool)},
-        {"deprecation_message", std::string(kCreateAobPatternDeprecationMessage)},
-    };
-    if (includeMask) {
-        fields.emplace_back("mask", PatternGenerator::FormatMask(result.pattern));
-    }
-    if (includeOffset) {
-        fields.emplace_back("target_offset", std::to_string(result.targetOffset));
-    }
-
-    return MakeOk(std::move(fields));
-}
-
 std::string DebuggerService::HandleCreateSignature(const ParsedMessage& message) const {
     const auto address = ParseAddress(message.GetFirst("address").value_or(""));
     const auto maxBytes = ParseUnsigned(message.GetFirst("max_bytes").value_or(std::to_string(kDefaultGeneratedPatternBytes)));
@@ -1185,10 +1158,10 @@ std::string DebuggerService::HandleCreateSignature(const ParsedMessage& message)
         {"base_address", ToHex(result.baseAddress)},
         {"image_size", std::to_string(result.imageSize)},
         {"module_path", result.modulePath},
-        {"pattern", PatternGenerator::FormatPattern(result.pattern)},
+        {"pattern", FormatPatternText(result.pattern)},
         {"match_count", std::to_string(result.matchCount)},
         {"byte_count", std::to_string(result.pattern.size())},
-        {"wildcard_count", std::to_string(PatternGenerator::CountWildcards(result.pattern))},
+        {"wildcard_count", std::to_string(CountPatternWildcards(result.pattern))},
     });
 }
 

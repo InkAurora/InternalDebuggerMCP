@@ -410,6 +410,8 @@ def _ejection_payload(result: EjectionResult, *, cleared_session: bool) -> dict[
 def _format_native_failure(error: _NativeRequestFailure) -> str:
     diagnostic_fields: list[tuple[str, str]] = []
     for key, label in (
+        ("command", "command"),
+        ("replacement_tool", "replacement_tool"),
         ("address", "address"),
         ("requested_size", "requested_size"),
         ("requested_max_bytes", "requested_max_bytes"),
@@ -775,43 +777,6 @@ def create_mcp(session_manager: SessionManager) -> FastMCP:
         }
         if "match_start" in fields:
             payload["match_starts"] = fields["match_start"]
-        return _structured_result(payload)
-
-    @mcp.tool(description="Deprecated: generate a process-wide unique x64dbg-style AOB pattern for a readable target address. Prefer create_signature for new callers; keep create_aob_pattern only for compatibility cases that still require mask, pattern_start, or target_offset semantics. Requires both pid and process_name for stale-PID recovery.")
-    async def create_aob_pattern(
-        pid: int,
-        process_name: str,
-        address: str,
-        max_bytes: int = 64,
-        include_mask: bool = False,
-        include_offset: bool = False,
-        dll_path: str | None = None,
-    ) -> StructuredToolResult:
-        fields = await request(
-            pid,
-            process_name,
-            "create_aob_pattern",
-            dll_path=dll_path,
-            address=address,
-            max_bytes=max_bytes,
-            include_mask=int(include_mask),
-            include_offset=int(include_offset),
-        )
-        payload: dict[str, Any] = {
-            "address": fields["address"][0],
-            "pattern": fields["pattern"][0],
-            "pattern_start": fields["pattern_start"][0],
-            "match_count": int(fields["match_count"][0]),
-            "byte_count": int(fields["byte_count"][0]),
-            "wildcard_count": int(fields["wildcard_count"][0]),
-            "deprecated": fields.get("deprecated", ["0"])[0] == "1",
-            "replacement_tool": fields["replacement_tool"][0],
-            "deprecation_message": fields["deprecation_message"][0],
-        }
-        if "mask" in fields:
-            payload["mask"] = fields["mask"][0]
-        if "target_offset" in fields:
-            payload["target_offset"] = int(fields["target_offset"][0])
         return _structured_result(payload)
 
     @mcp.tool(description="Generate a module-scoped signature that begins at the requested readable address and uses inline ?? wildcards when needed. Returns the module bounds needed to re-scan inside the same scope. Requires both pid and process_name for stale-PID recovery.")

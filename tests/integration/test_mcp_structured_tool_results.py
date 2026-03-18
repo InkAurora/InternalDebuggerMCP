@@ -99,6 +99,23 @@ class McpStructuredToolResultsTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("layout_mode", result.structuredContent)
         self.assertIn("injector_path", result.structuredContent)
 
+    async def test_tool_list_omits_removed_create_aob_pattern(self) -> None:
+        server = StdioServerParameters(
+            command=sys.executable,
+            args=[str(MCP_SRC / "launch.py")],
+            cwd=str(MCP_SRC),
+            env={"PYTHONUTF8": "1", "PYTHONUNBUFFERED": "1"},
+        )
+
+        async with stdio_client(server) as (read_stream, write_stream):
+            async with ClientSession(read_stream, write_stream) as session:
+                await session.initialize()
+                tools = await session.list_tools()
+
+        tool_names = {tool.name for tool in tools.tools}
+        self.assertIn("create_signature", tool_names)
+        self.assertNotIn("create_aob_pattern", tool_names)
+
     async def test_write_memory_and_invoke_function_return_structured_content(self) -> None:
         target_path = REPO_ROOT / "artifacts" / "Release" / "x64" / "TestTarget" / "TestTarget.exe"
         if not target_path.exists():
@@ -472,89 +489,6 @@ class McpStructuredToolResultsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(write_results.structuredContent["sources"][0]["last_access_address"].lower(), symbols["g_write_watch_target"].lower())
         self.assertIn("mov", read_results.structuredContent["sources"][0]["instruction"].lower())
         self.assertIn("mov", write_results.structuredContent["sources"][0]["instruction"].lower())
-
-    async def test_create_aob_pattern_remains_available_for_compatibility(self) -> None:
-        target_path = REPO_ROOT / "artifacts" / "Release" / "x64" / "TestTarget" / "TestTarget.exe"
-        if not target_path.exists():
-            raise unittest.SkipTest(f"Missing build artifact: {target_path}")
-
-        target = subprocess.Popen(
-            [str(target_path)],
-            cwd=REPO_ROOT,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            bufsize=1,
-        )
-        assert target.stdout is not None
-        symbols = _read_target_startup(target)
-
-        server = StdioServerParameters(
-            command=sys.executable,
-            args=[str(MCP_SRC / "launch.py")],
-            cwd=str(MCP_SRC),
-            env={"PYTHONUTF8": "1", "PYTHONUNBUFFERED": "1"},
-        )
-
-        code_address = f"0x{int(symbols['g_aob_code_anchor'], 16) + 1:X}"
-
-        try:
-            async with stdio_client(server) as (read_stream, write_stream):
-                async with ClientSession(read_stream, write_stream) as session:
-                    await session.initialize()
-
-                    code_pattern = await session.call_tool(
-                        "create_aob_pattern",
-                        {
-                            "pid": target.pid,
-                            "process_name": TARGET_PROCESS_NAME,
-                            "address": code_address,
-                            "max_bytes": 64,
-                            "include_mask": True,
-                            "include_offset": True,
-                        },
-                    )
-
-                    code_scan = await session.call_tool(
-                        "pattern_scan",
-                        {
-                            "pid": target.pid,
-                            "process_name": TARGET_PROCESS_NAME,
-                            "pattern": code_pattern.structuredContent["pattern"],
-                            "mask": code_pattern.structuredContent["mask"],
-                            "target_offset": code_pattern.structuredContent["target_offset"],
-                            "limit": 2,
-                        },
-                    )
-        finally:
-            if target.poll() is None:
-                target.terminate()
-                try:
-                    target.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    target.kill()
-                    target.wait(timeout=5)
-            if target.stdout is not None:
-                target.stdout.close()
-
-        self.assertFalse(code_pattern.isError)
-        self.assertFalse(code_scan.isError)
-
-        assert code_pattern.structuredContent is not None
-        assert code_scan.structuredContent is not None
-
-        self.assertEqual(code_pattern.structuredContent["match_count"], 1)
-        self.assertTrue(code_pattern.structuredContent["deprecated"])
-        self.assertEqual(code_pattern.structuredContent["replacement_tool"], "create_signature")
-        self.assertIn("create_aob_pattern is deprecated", code_pattern.structuredContent["deprecation_message"])
-        self.assertEqual(code_scan.structuredContent["match_count"], 1)
-        self.assertEqual(code_scan.structuredContent["matches"][0].lower(), code_address.lower())
-        self.assertEqual(code_scan.structuredContent["match_starts"][0].lower(), code_pattern.structuredContent["pattern_start"].lower())
-        self.assertEqual(
-            int(code_pattern.structuredContent["pattern_start"], 16) + code_pattern.structuredContent["target_offset"],
-            int(code_address, 16),
-        )
-        self.assertEqual(len(code_pattern.structuredContent["mask"]), code_pattern.structuredContent["byte_count"])
 
     async def test_create_signature_returns_module_scoped_round_trip_results(self) -> None:
         target_path = REPO_ROOT / "artifacts" / "Release" / "x64" / "TestTarget" / "TestTarget.exe"

@@ -140,61 +140,7 @@ def _capture_signature_case(
     }
 
 
-def _capture_aob_case(
-    session_manager: SessionManager,
-    pid: int,
-    address: str,
-    max_bytes: int,
-    iterations: int,
-    warmup: int,
-) -> dict[str, object]:
-    samples_ms: list[float] = []
-    reference_fields: dict[str, object] | None = None
-
-    for index in range(iterations + warmup):
-        started = time.perf_counter()
-        fields = _send_native_request(
-            session_manager,
-            pid,
-            "create_aob_pattern",
-            process_name=TARGET_PROCESS_NAME,
-            address=address,
-            max_bytes=max_bytes,
-            include_mask=1,
-            include_offset=1,
-        )
-        elapsed_ms = (time.perf_counter() - started) * 1000.0
-
-        normalized: dict[str, object] = {
-            "pattern": fields["pattern"][0],
-            "mask": fields["mask"][0],
-            "pattern_start": fields["pattern_start"][0],
-            "target_offset": int(fields["target_offset"][0]),
-            "byte_count": int(fields["byte_count"][0]),
-            "wildcard_count": int(fields["wildcard_count"][0]),
-            "match_count": int(fields["match_count"][0]),
-        }
-        if reference_fields is None:
-            reference_fields = normalized
-        elif normalized != reference_fields:
-            raise RuntimeError(
-                "create_aob_pattern returned different outputs across identical iterations: "
-                f"expected {reference_fields}, got {normalized}"
-            )
-
-        if index >= warmup:
-            samples_ms.append(elapsed_ms)
-
-    assert reference_fields is not None
-    return {
-        **reference_fields,
-        "iterations": iterations,
-        "warmup": warmup,
-        **_summarize(samples_ms),
-    }
-
-
-def run_benchmark(mode: str, iterations: int, warmup: int, max_bytes_values: list[int]) -> dict[str, object]:
+def run_benchmark(iterations: int, warmup: int, max_bytes_values: list[int]) -> dict[str, object]:
     process = None
     try:
         process, symbols = _start_target_process()
@@ -205,9 +151,7 @@ def run_benchmark(mode: str, iterations: int, warmup: int, max_bytes_values: lis
 
         payload: dict[str, object] = {
             "pid": process.pid,
-            "mode": mode,
-            "preferred_tool": "create_signature",
-            "legacy_tool": "create_aob_pattern",
+            "tool": "create_signature",
             "cases": {
                 "code": {},
                 "data": {},
@@ -215,49 +159,23 @@ def run_benchmark(mode: str, iterations: int, warmup: int, max_bytes_values: lis
         }
         for max_bytes in max_bytes_values:
             for label, address in (("code", code_address), ("data", data_address)):
-                case_payload: dict[str, object] = {}
-                if mode in {"signature", "compare"}:
-                    case_payload["create_signature"] = _capture_signature_case(
-                        session_manager,
-                        process.pid,
-                        address,
-                        max_bytes,
-                        iterations,
-                        warmup,
-                    )
-                if mode in {"aob", "compare"}:
-                    case_payload["create_aob_pattern"] = _capture_aob_case(
-                        session_manager,
-                        process.pid,
-                        address,
-                        max_bytes,
-                        iterations,
-                        warmup,
-                    )
-                if mode == "compare":
-                    signature_mean = case_payload["create_signature"]["mean_ms"]
-                    aob_mean = case_payload["create_aob_pattern"]["mean_ms"]
-                    case_payload["comparison"] = {
-                        "faster": "create_signature" if signature_mean < aob_mean else "create_aob_pattern",
-                        "mean_delta_ms": round(aob_mean - signature_mean, 3),
-                        "aob_over_signature_ratio": round(aob_mean / signature_mean, 3) if signature_mean else None,
-                    }
-                payload["cases"][label][str(max_bytes)] = case_payload
+                payload["cases"][label][str(max_bytes)] = _capture_signature_case(
+                    session_manager,
+                    process.pid,
+                    address,
+                    max_bytes,
+                    iterations,
+                    warmup,
+                )
 
         return payload
     finally:
         _stop_target_process(process)
 
 
-def build_parser(default_mode: str = "compare") -> argparse.ArgumentParser:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Benchmark signature generation with create_signature as the preferred path."
-    )
-    parser.add_argument(
-        "--mode",
-        choices=["signature", "aob", "compare"],
-        default=default_mode,
-        help="Select create_signature only, the deprecated create_aob_pattern only, or a side-by-side comparison",
+        description="Benchmark create_signature output stability and latency."
     )
     parser.add_argument("--iterations", type=int, default=10, help="Calls per address/max_bytes case")
     parser.add_argument("--warmup", type=int, default=1, help="Unmeasured warmup calls per address/max_bytes case")
@@ -271,10 +189,10 @@ def build_parser(default_mode: str = "compare") -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: list[str] | None = None, *, default_mode: str = "compare") -> int:
-    parser = build_parser(default_mode=default_mode)
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
     args = parser.parse_args(argv)
-    print(json.dumps(run_benchmark(args.mode, args.iterations, args.warmup, args.max_bytes), indent=2))
+    print(json.dumps(run_benchmark(args.iterations, args.warmup, args.max_bytes), indent=2))
     return 0
 
 

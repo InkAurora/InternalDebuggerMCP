@@ -102,7 +102,6 @@
     <ClInclude Include="include\Disassembler.h" />
     <ClInclude Include="include\IpcServer.h" />
     <ClInclude Include="include\MemoryReader.h" />
-    <ClInclude Include="include\PatternGenerator.h" />
     <ClInclude Include="include\SignatureGenerator.h" />
     <ClInclude Include="include\PatternScanner.h" />
     <ClInclude Include="include\WatchManager.h" />
@@ -114,7 +113,6 @@
     <ClCompile Include="src\dllmain.cpp" />
     <ClCompile Include="src\IpcServer.cpp" />
     <ClCompile Include="src\MemoryReader.cpp" />
-    <ClCompile Include="src\PatternGenerator.cpp" />
     <ClCompile Include="src\SignatureGenerator.cpp" />
     <ClCompile Include="src\PatternScanner.cpp" />
     <ClCompile Include="src\WatchManager.cpp" />

@@ -556,44 +556,33 @@ class AutoInjectionRequestsTest(unittest.TestCase):
             )
             self.assertEqual(ping["pid"][0], str(self.target_pid))
 
-    def test_create_aob_pattern_remains_available_for_compatibility(self) -> None:
-        code_address = f"0x{int(self.target_symbols['g_aob_code_anchor'], 16) + 1:X}"
-
-        code_pattern = _send_native_request(
-            self.session_manager,
+    def test_create_aob_pattern_is_removed_and_reports_replacement(self) -> None:
+        response = PipeClient(
             self.target_pid,
-            "create_aob_pattern",
-            process_name=TARGET_PROCESS_NAME,
-            address=code_address,
-            max_bytes=64,
-            include_mask=1,
-            include_offset=1,
-        )
+            timeout_ms=5000,
+        ).request("create_aob_pattern", address=self.target_symbols["g_bytes"], max_bytes=16)
 
-        code_matches = _send_native_request(
-            self.session_manager,
-            self.target_pid,
-            "pattern_scan",
-            process_name=TARGET_PROCESS_NAME,
-            pattern=code_pattern["pattern"][0],
-            mask=code_pattern["mask"][0],
-            target_offset=code_pattern["target_offset"][0],
-            limit=2,
-        )
+        with self.assertRaises(NativeRequestError) as context:
+            response.raise_for_error()
 
-        self.assertEqual(code_pattern["match_count"][0], "1")
-        self.assertEqual(code_pattern["deprecated"][0], "1")
-        self.assertEqual(code_pattern["replacement_tool"][0], "create_signature")
-        self.assertIn("create_aob_pattern is deprecated", code_pattern["deprecation_message"][0])
-        self.assertEqual(code_matches["match_count"][0], "1")
-        self.assertEqual(code_matches["match"][0].lower(), code_address.lower())
-        self.assertEqual(code_matches["match_start"][0].lower(), code_pattern["pattern_start"][0].lower())
+        self.assertEqual(context.exception.code, "deprecated_tool")
+        self.assertEqual(context.exception.one("command"), "create_aob_pattern")
+        self.assertEqual(context.exception.one("replacement_tool"), "create_signature")
 
-        self.assertEqual(
-            int(code_pattern["pattern_start"][0], 16) + int(code_pattern["target_offset"][0]),
-            int(code_address, 16),
-        )
-        self.assertEqual(len(code_pattern["mask"][0]), int(code_pattern["byte_count"][0]))
+        with self.assertRaises(RuntimeError) as runtime_context:
+            _send_native_request(
+                self.session_manager,
+                self.target_pid,
+                "create_aob_pattern",
+                process_name=TARGET_PROCESS_NAME,
+                address=self.target_symbols["g_bytes"],
+                max_bytes=16,
+            )
+
+        message = str(runtime_context.exception)
+        self.assertIn("deprecated_tool", message)
+        self.assertIn("command=create_aob_pattern", message)
+        self.assertIn("replacement_tool=create_signature", message)
 
     def test_create_signature_round_trips_for_code_and_data_with_module_scope(self) -> None:
         code_address = f"0x{int(self.target_symbols['g_aob_code_anchor'], 16) + 1:X}"
@@ -717,48 +706,6 @@ class AutoInjectionRequestsTest(unittest.TestCase):
                         limit=1,
                         **fields,
                     )
-
-    def test_create_aob_pattern_fails_when_search_budget_is_too_small(self) -> None:
-        with self.assertRaisesRegex(RuntimeError, "pattern_generation_failed"):
-            _send_native_request(
-                self.session_manager,
-                self.target_pid,
-                "create_aob_pattern",
-                process_name=TARGET_PROCESS_NAME,
-                address=self.target_symbols["g_bytes"],
-                max_bytes=1,
-            )
-
-    def test_create_aob_pattern_memory_failures_include_diagnostics(self) -> None:
-        response = PipeClient(
-            self.target_pid,
-            timeout_ms=5000,
-        ).request("create_aob_pattern", address="0x1", max_bytes=16)
-
-        with self.assertRaises(NativeRequestError) as context:
-            response.raise_for_error()
-
-        self.assertEqual(context.exception.code, "memory_read_failed")
-        self.assertEqual(context.exception.one("address"), "0x1")
-        self.assertEqual(context.exception.one("requested_max_bytes"), "16")
-        self.assertEqual(context.exception.one("memory_reason"), "region_not_committed")
-
-        with self.assertRaises(RuntimeError) as runtime_context:
-            _send_native_request(
-                self.session_manager,
-                self.target_pid,
-                "create_aob_pattern",
-                process_name=TARGET_PROCESS_NAME,
-                address="0x1",
-                max_bytes=16,
-            )
-
-        message = str(runtime_context.exception)
-        self.assertIn("memory_read_failed", message)
-        self.assertIn("address=0x1", message)
-        self.assertIn("requested_max_bytes=16", message)
-        self.assertIn("reason=region_not_committed", message)
-
 
 class NameFallbackAutoInjectionRequestsTest(unittest.TestCase):
     @classmethod
