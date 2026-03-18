@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cstring>
 #include <format>
+#include <utility>
 
 #include "DebuggerProtocol.h"
 #include "MemoryReader.h"
@@ -31,6 +32,11 @@ struct CandidateRegionContext {
     bool executable = false;
 };
 
+struct WildcardSpan {
+    std::size_t start = 0;
+    std::size_t end = 0;
+};
+
 [[nodiscard]] bool TryGetCandidateRegionContext(
     const std::uintptr_t address,
     CandidateRegionContext& context) {
@@ -55,6 +61,40 @@ struct CandidateRegionContext {
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;
     }
+}
+
+bool TryBuildCodeAwareWildcardSpans(
+    const Disassembler& disassembler,
+    const std::uintptr_t start,
+    const std::vector<std::uint8_t>& bytes,
+    std::vector<WildcardSpan>& spans) {
+    spans.clear();
+    auto instructions = disassembler.Disassemble(start, bytes, bytes.size());
+    spans.reserve(instructions.size());
+    for (auto& instruction : instructions) {
+        const auto offset = static_cast<std::size_t>(instruction.address - start);
+        if (instruction.bytes.empty()) {
+            continue;
+        }
+
+        if ((instruction.mnemonic == "call" || instruction.mnemonic == "jmp") &&
+            instruction.bytes.size() == 5 &&
+            (instruction.bytes[0] == 0xE8 || instruction.bytes[0] == 0xE9)) {
+            spans.push_back(WildcardSpan{offset + 1, offset + instruction.bytes.size()});
+            continue;
+        }
+
+        if (instruction.mnemonic == "mov" &&
+            instruction.operands.find("[rip") != std::string::npos &&
+            instruction.bytes.size() >= 7) {
+            const auto wildcardStart = instruction.bytes.size() - 4;
+            spans.push_back(WildcardSpan{offset + wildcardStart, offset + instruction.bytes.size()});
+        }
+
+        std::fill(instruction.bytes.begin(), instruction.bytes.end(), static_cast<std::uint8_t>(0));
+    }
+
+    return !spans.empty();
 }
 
 }  // namespace
@@ -97,14 +137,69 @@ bool PatternGenerator::Generate(
     }
 
     const auto readableRegions = memoryReader_.EnumerateReadableRegions(std::nullopt, std::nullopt);
-    std::vector<std::uint8_t> bytes;
-    bytes.reserve(maxBytes);
+    const auto maxOffsetByStart = std::min(maxBytes - 1, address - candidateRegion.start);
+    const auto bytesAvailableFromAddress = candidateRegion.end - address;
+    const auto maxForwardBytes = std::min(maxBytes, bytesAvailableFromAddress);
+    const auto windowStart = address - maxOffsetByStart;
+    const auto windowSize = maxOffsetByStart + maxForwardBytes;
+
+    std::vector<std::uint8_t> rawWindow(windowSize);
+    if (!CopyBytesGuarded(windowStart, windowSize, rawWindow.data())) {
+        error = "memory_read_failed";
+        return false;
+    }
+
+    std::vector<PatternByte> exactWindow;
+    exactWindow.reserve(windowSize);
+    for (const auto byte : rawWindow) {
+        exactWindow.push_back(PatternByte{byte, false});
+    }
+
+    std::vector<std::vector<WildcardSpan>> wildcardSpansByStart;
+    if (candidateRegion.executable) {
+        wildcardSpansByStart.resize(maxOffsetByStart + 1);
+        for (std::size_t startOffset = 0; startOffset <= maxOffsetByStart; ++startOffset) {
+            std::vector<std::uint8_t> suffixBytes(
+                rawWindow.begin() + static_cast<std::ptrdiff_t>(startOffset),
+                rawWindow.end());
+            TryBuildCodeAwareWildcardSpans(
+                disassembler_,
+                windowStart + startOffset,
+                suffixBytes,
+                wildcardSpansByStart[startOffset]);
+            std::fill(suffixBytes.begin(), suffixBytes.end(), static_cast<std::uint8_t>(0));
+        }
+    }
+
+    std::fill(rawWindow.begin(), rawWindow.end(), static_cast<std::uint8_t>(0));
+    rawWindow.clear();
+
     std::vector<PatternByte> exact;
     exact.reserve(maxBytes);
     std::vector<PatternByte> codeAware;
     codeAware.reserve(maxBytes);
-    const auto maxOffsetByStart = address - candidateRegion.start;
-    const auto bytesAvailableFromAddress = candidateRegion.end - address;
+
+    auto applyCodeAwareWildcards = [&codeAware](
+                                     const std::vector<WildcardSpan>& spans,
+                                     const std::size_t length) -> bool {
+        bool hasWildcards = false;
+        for (const auto& span : spans) {
+            if (span.start >= length) {
+                continue;
+            }
+
+            const auto wildcardEnd = std::min(span.end, length);
+            for (std::size_t index = span.start; index < wildcardEnd; ++index) {
+                if (!codeAware[index].wildcard) {
+                    codeAware[index].wildcard = true;
+                    hasWildcards = true;
+                }
+            }
+        }
+
+        return hasWildcards;
+    };
+
     for (std::size_t length = 1; length <= maxBytes; ++length) {
         const auto minOffsetByEnd = length > bytesAvailableFromAddress ? length - bytesAvailableFromAddress : 0;
         const auto maxTargetOffset = std::min(length - 1, maxOffsetByStart);
@@ -118,20 +213,15 @@ bool PatternGenerator::Generate(
             }
 
             const auto start = address - targetOffset;
-            bytes.resize(length);
-            if (!CopyBytesGuarded(start, length, bytes.data())) {
-                continue;
-            }
-
-            BuildExactPattern(bytes, exact);
+            const auto startOffset = static_cast<std::size_t>(start - windowStart);
+            BuildExactPattern(exactWindow.data() + startOffset, length, exact);
             bool hasCodeAwareWildcards = false;
             if (candidateRegion.executable) {
-                hasCodeAwareWildcards = BuildCodeAwarePattern(start, bytes, codeAware);
+                codeAware = exact;
+                hasCodeAwareWildcards = applyCodeAwareWildcards(wildcardSpansByStart[startOffset], length);
             } else {
                 codeAware.clear();
             }
-
-            std::fill(bytes.begin(), bytes.end(), static_cast<std::uint8_t>(0));
 
             if (candidateRegion.executable && hasCodeAwareWildcards) {
                 if (IsUniqueCandidate(codeAware, start, readableRegions)) {
@@ -206,54 +296,11 @@ bool PatternGenerator::IsUniqueCandidate(
 }
 
 void PatternGenerator::BuildExactPattern(
-    const std::vector<std::uint8_t>& bytes,
+    const PatternByte* bytes,
+    const std::size_t size,
     std::vector<PatternByte>& pattern) const {
     pattern.clear();
-    pattern.reserve(bytes.size());
-    for (const auto byte : bytes) {
-        pattern.push_back(PatternByte{byte, false});
-    }
-}
-
-bool PatternGenerator::BuildCodeAwarePattern(
-    const std::uintptr_t start,
-    const std::vector<std::uint8_t>& bytes,
-    std::vector<PatternByte>& pattern) const {
-    BuildExactPattern(bytes, pattern);
-    bool hasWildcards = false;
-    const auto instructions = disassembler_.Disassemble(start, bytes, bytes.size());
-    for (const auto& instruction : instructions) {
-        const auto offset = static_cast<std::size_t>(instruction.address - start);
-        if (instruction.bytes.empty() || offset >= pattern.size()) {
-            continue;
-        }
-
-        if ((instruction.mnemonic == "call" || instruction.mnemonic == "jmp") &&
-            instruction.bytes.size() == 5 &&
-            (instruction.bytes[0] == 0xE8 || instruction.bytes[0] == 0xE9)) {
-            for (std::size_t index = 1; index < instruction.bytes.size() && offset + index < pattern.size(); ++index) {
-                if (!pattern[offset + index].wildcard) {
-                    pattern[offset + index].wildcard = true;
-                    hasWildcards = true;
-                }
-            }
-            continue;
-        }
-
-        if (instruction.mnemonic == "mov" &&
-            instruction.operands.find("[rip") != std::string::npos &&
-            instruction.bytes.size() >= 7) {
-            const auto wildcardStart = instruction.bytes.size() - 4;
-            for (std::size_t index = wildcardStart; index < instruction.bytes.size() && offset + index < pattern.size(); ++index) {
-                if (!pattern[offset + index].wildcard) {
-                    pattern[offset + index].wildcard = true;
-                    hasWildcards = true;
-                }
-            }
-        }
-    }
-
-    return hasWildcards;
+    pattern.insert(pattern.end(), bytes, bytes + static_cast<std::ptrdiff_t>(size));
 }
 
 }  // namespace idmcp

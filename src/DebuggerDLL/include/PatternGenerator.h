@@ -41,11 +41,7 @@ private:
         const std::vector<PatternByte>& pattern,
         std::uintptr_t expectedMatch,
         const ReadableMemoryRegions& regions) const;
-    void BuildExactPattern(const std::vector<std::uint8_t>& bytes, std::vector<PatternByte>& pattern) const;
-    [[nodiscard]] bool BuildCodeAwarePattern(
-        std::uintptr_t start,
-        const std::vector<std::uint8_t>& bytes,
-        std::vector<PatternByte>& pattern) const;
+    void BuildExactPattern(const PatternByte* bytes, std::size_t size, std::vector<PatternByte>& pattern) const;
 
     const MemoryReader& memoryReader_;
     const PatternScanner& patternScanner_;
