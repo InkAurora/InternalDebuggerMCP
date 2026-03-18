@@ -556,7 +556,7 @@ class AutoInjectionRequestsTest(unittest.TestCase):
             )
             self.assertEqual(ping["pid"][0], str(self.target_pid))
 
-    def test_create_aob_pattern_is_removed_and_reports_replacement(self) -> None:
+    def test_create_aob_pattern_is_unknown_command(self) -> None:
         response = PipeClient(
             self.target_pid,
             timeout_ms=5000,
@@ -565,9 +565,7 @@ class AutoInjectionRequestsTest(unittest.TestCase):
         with self.assertRaises(NativeRequestError) as context:
             response.raise_for_error()
 
-        self.assertEqual(context.exception.code, "deprecated_tool")
-        self.assertEqual(context.exception.one("command"), "create_aob_pattern")
-        self.assertEqual(context.exception.one("replacement_tool"), "create_signature")
+        self.assertEqual(context.exception.code, "unknown_command")
 
         with self.assertRaises(RuntimeError) as runtime_context:
             _send_native_request(
@@ -580,9 +578,8 @@ class AutoInjectionRequestsTest(unittest.TestCase):
             )
 
         message = str(runtime_context.exception)
-        self.assertIn("deprecated_tool", message)
-        self.assertIn("command=create_aob_pattern", message)
-        self.assertIn("replacement_tool=create_signature", message)
+        self.assertIn("unknown_command", message)
+        self.assertIn("create_aob_pattern", message)
 
     def test_create_signature_round_trips_for_code_and_data_with_module_scope(self) -> None:
         code_address = f"0x{int(self.target_symbols['g_aob_code_anchor'], 16) + 1:X}"

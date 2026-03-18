@@ -49,7 +49,7 @@ If an auto-injecting tool targets a process whose debugger pipe is not yet reach
 - `create_signature` generates a module-scoped unique signature that always begins at the requested address and returns inline `??` wildcards directly in the pattern text.
 - `create_signature` also returns `base_address` and `image_size` for the containing module so callers can re-run `pattern_scan` inside the same scope.
 - `create_signature` fails with `address_not_in_module` when the requested readable address is outside every loaded module, such as heap memory.
-- Legacy direct native requests for `create_aob_pattern` now fail with `deprecated_tool` and `replacement_tool=create_signature`; the command is no longer registered as an MCP tool.
+- `create_aob_pattern` is no longer implemented or registered. MCP clients will not see it in the tool list, and direct native requests fall through as `unknown_command`.
 - `dll_path` is optional and lets the caller override the default debugger DLL for that request.
 - `eject_debugger` does not auto-inject. It clears any tracked MCP session state for the PID and best-effort ejects the debugger DLL, preferring the live pipe path and falling back to `Injector.exe --eject` when the pipe is stale or already gone.
 - `list_modules` returns `enumeration_method="toolhelp_snapshot"` in addition to the module list.

@@ -410,8 +410,6 @@ def _ejection_payload(result: EjectionResult, *, cleared_session: bool) -> dict[
 def _format_native_failure(error: _NativeRequestFailure) -> str:
     diagnostic_fields: list[tuple[str, str]] = []
     for key, label in (
-        ("command", "command"),
-        ("replacement_tool", "replacement_tool"),
         ("address", "address"),
         ("requested_size", "requested_size"),
         ("requested_max_bytes", "requested_max_bytes"),

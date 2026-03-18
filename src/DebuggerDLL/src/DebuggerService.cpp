@@ -21,10 +21,6 @@ namespace idmcp {
 
 namespace {
 
-constexpr std::string_view kCreateAobPatternReplacementTool = "create_signature";
-constexpr std::string_view kCreateAobPatternRemovalDetail =
-    "create_aob_pattern has been removed; use create_signature instead.";
-
 [[nodiscard]] std::string FormatPatternText(const std::vector<PatternByte>& pattern) {
     std::string formatted;
     formatted.reserve(pattern.size() * 3);
@@ -887,12 +883,6 @@ std::string DebuggerService::Dispatch(const std::string& request) {
     }
     if (*command == "pattern_scan") {
         return HandlePatternScan(message);
-    }
-    if (*command == "create_aob_pattern") {
-        return MakeError(
-            "deprecated_tool",
-            std::string(kCreateAobPatternRemovalDetail),
-            {{"command", "create_aob_pattern"}, {"replacement_tool", std::string(kCreateAobPatternReplacementTool)}});
     }
     if (*command == "create_signature") {
         return HandleCreateSignature(message);
