@@ -727,6 +727,7 @@ DebuggerService::DebuggerService()
     : patternScanner_(memoryReader_),
       watchManager_(memoryReader_),
       patternGenerator_(memoryReader_, patternScanner_, disassembler_),
+    signatureGenerator_(memoryReader_, patternScanner_, disassembler_),
       accessWatchManager_(memoryReader_, disassembler_) {}
 
 DebuggerService::~DebuggerService() = default;
@@ -864,6 +865,9 @@ std::string DebuggerService::Dispatch(const std::string& request) {
     }
     if (*command == "create_aob_pattern") {
         return HandleCreateAobPattern(message);
+    }
+    if (*command == "create_signature") {
+        return HandleCreateSignature(message);
     }
     if (*command == "watch_address") {
         return HandleWatchAddress(message);
@@ -1131,6 +1135,52 @@ std::string DebuggerService::HandleCreateAobPattern(const ParsedMessage& message
     }
 
     return MakeOk(std::move(fields));
+}
+
+std::string DebuggerService::HandleCreateSignature(const ParsedMessage& message) const {
+    const auto address = ParseAddress(message.GetFirst("address").value_or(""));
+    const auto maxBytes = ParseUnsigned(message.GetFirst("max_bytes").value_or(std::to_string(kDefaultGeneratedPatternBytes)));
+    if (!address.has_value() || !maxBytes.has_value()) {
+        return MakeError("invalid_arguments", "address and max_bytes are required");
+    }
+
+    GeneratedSignatureResult result{};
+    std::string error;
+    MemoryAccessDiagnostics diagnostics;
+    if (!signatureGenerator_.Generate(*address, static_cast<std::size_t>(*maxBytes), result, error, &diagnostics)) {
+        if (error == "memory_read_failed") {
+            auto fields = BuildMemoryAccessErrorFields(diagnostics);
+            fields.emplace_back("requested_max_bytes", std::to_string(*maxBytes));
+            return MakeError(
+                error,
+                DescribeMemoryAccessFailure("generate signature", diagnostics),
+                std::move(fields));
+        }
+
+        if (error == "address_not_in_module") {
+            return MakeError(
+                error,
+                std::format("unable to generate a module-scoped signature at {} because the address is not inside a loaded module", ToHex(*address)),
+                BuildRequestedAddressFields(*address, {{"requested_max_bytes", std::to_string(*maxBytes)}}));
+        }
+
+        return MakeError(
+            error,
+            std::format("unable to generate a unique module-scoped signature at {} within {} bytes", ToHex(*address), *maxBytes),
+            BuildRequestedAddressFields(*address, {{"requested_max_bytes", std::to_string(*maxBytes)}}));
+    }
+
+    return MakeOk({
+        {"address", ToHex(result.address)},
+        {"module_name", result.moduleName},
+        {"base_address", ToHex(result.baseAddress)},
+        {"image_size", std::to_string(result.imageSize)},
+        {"module_path", result.modulePath},
+        {"pattern", PatternGenerator::FormatPattern(result.pattern)},
+        {"match_count", std::to_string(result.matchCount)},
+        {"byte_count", std::to_string(result.pattern.size())},
+        {"wildcard_count", std::to_string(PatternGenerator::CountWildcards(result.pattern))},
+    });
 }
 
 std::string DebuggerService::HandleWatchAddress(const ParsedMessage& message) {

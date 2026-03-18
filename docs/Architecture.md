@@ -55,6 +55,7 @@ Repeated fields are allowed and used for list-like data such as modules, instruc
 - `list_modules`
 - `pattern_scan`
 - `create_aob_pattern`
+- `create_signature`
 - `watch_address`
 - `unwatch_address`
 - `poll_watch_events`
@@ -74,6 +75,7 @@ Repeated fields are allowed and used for list-like data such as modules, instruc
 - pattern scans only walk committed readable regions;
 - `pattern_scan` can match either wildcard AOB text or exact bytes plus a separate mask, and offset-adjusted results are applied only after raw pattern starts are found;
 - generated AOB patterns are validated against committed readable regions and currently search up to 128 bytes per request;
+- `create_signature` only scans readable pages inside the containing module image, always starts the candidate at the requested address, and returns the module bounds needed to rescan in the same scope;
 - function invocation is limited to the in-process x64 ABI, a bounded argument count, and scalar integer/pointer/buffer/`f32`/`f64` arguments plus scalar `u64`/`f32`/`f64` returns;
 - watch count is capped;
 - page-guard-backed access watches are capped at 4 concurrently active watched addresses per process and only support 1, 2, 4, or 8 byte ranges;

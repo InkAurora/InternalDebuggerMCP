@@ -18,6 +18,7 @@ If an auto-injecting tool targets a process whose debugger pipe is not yet reach
 - `rebase_address(pid, process_name, module, direction, offset=None, address=None, dll_path=None)`
 - `pattern_scan(pid, process_name, pattern, mask=None, target_offset=None, start_address=None, region_size=None, limit=32, dll_path=None)`
 - `create_aob_pattern(pid, process_name, address, max_bytes=64, include_mask=False, include_offset=False, dll_path=None)`
+- `create_signature(pid, process_name, address, max_bytes=64, dll_path=None)`
 - `watch_address(pid, process_name, address, size, interval_ms=250, watch_id=None, dll_path=None)`
 - `unwatch_address(pid, process_name, watch_id, dll_path=None)`
 - `poll_watch_events(pid, process_name, limit=16, dll_path=None)`
@@ -51,6 +52,9 @@ If an auto-injecting tool targets a process whose debugger pipe is not yet reach
 - `create_aob_pattern` optionally returns a per-byte mask string alongside the AOB when `include_mask=True`.
 - `create_aob_pattern` currently searches up to `128` bytes and defaults to `64` bytes when `max_bytes` is omitted.
 - `create_aob_pattern(..., include_mask=True, include_offset=True)` can be round-tripped directly into `pattern_scan` by passing the returned `pattern`, `mask`, and `target_offset` back to the scanner.
+- `create_signature` generates a module-scoped unique signature that always begins at the requested address and returns inline `??` wildcards directly in the pattern text.
+- `create_signature` also returns `base_address` and `image_size` for the containing module so callers can re-run `pattern_scan` inside the same scope.
+- `create_signature` fails with `address_not_in_module` when the requested readable address is outside every loaded module, such as heap memory.
 - `dll_path` is optional and lets the caller override the default debugger DLL for that request.
 - `eject_debugger` does not auto-inject. It clears any tracked MCP session state for the PID and best-effort ejects the debugger DLL, preferring the live pipe path and falling back to `Injector.exe --eject` when the pipe is stale or already gone.
 - `list_modules` returns `enumeration_method="toolhelp_snapshot"` in addition to the module list.

@@ -46,6 +46,7 @@ def _read_target_startup(process: subprocess.Popen[str]) -> dict[str, str]:
                 "g_write_target",
                 "g_read_watch_target",
                 "g_write_watch_target",
+                "g_heap_signature_anchor",
                 "g_aob_data_anchor",
                 "g_aob_code_anchor",
                 "SampleFunction",
@@ -620,6 +621,89 @@ class AutoInjectionRequestsTest(unittest.TestCase):
         )
         self.assertEqual(len(code_pattern["mask"][0]), int(code_pattern["byte_count"][0]))
         self.assertEqual(len(data_pattern["mask"][0]), int(data_pattern["byte_count"][0]))
+
+    def test_create_signature_round_trips_for_code_and_data_with_module_scope(self) -> None:
+        code_address = f"0x{int(self.target_symbols['g_aob_code_anchor'], 16) + 1:X}"
+        data_address = f"0x{int(self.target_symbols['g_aob_data_anchor'], 16) + 4:X}"
+
+        code_signature = _send_native_request(
+            self.session_manager,
+            self.target_pid,
+            "create_signature",
+            process_name=TARGET_PROCESS_NAME,
+            address=code_address,
+            max_bytes=64,
+        )
+        data_signature = _send_native_request(
+            self.session_manager,
+            self.target_pid,
+            "create_signature",
+            process_name=TARGET_PROCESS_NAME,
+            address=data_address,
+            max_bytes=64,
+        )
+
+        code_matches = _send_native_request(
+            self.session_manager,
+            self.target_pid,
+            "pattern_scan",
+            process_name=TARGET_PROCESS_NAME,
+            pattern=code_signature["pattern"][0],
+            start=code_signature["base_address"][0],
+            size=code_signature["image_size"][0],
+            limit=2,
+        )
+        data_matches = _send_native_request(
+            self.session_manager,
+            self.target_pid,
+            "pattern_scan",
+            process_name=TARGET_PROCESS_NAME,
+            pattern=data_signature["pattern"][0],
+            start=data_signature["base_address"][0],
+            size=data_signature["image_size"][0],
+            limit=2,
+        )
+
+        self.assertEqual(code_signature["module_name"][0].lower(), TARGET_PROCESS_NAME.lower())
+        self.assertEqual(data_signature["module_name"][0].lower(), TARGET_PROCESS_NAME.lower())
+        self.assertEqual(code_signature["match_count"][0], "1")
+        self.assertEqual(data_signature["match_count"][0], "1")
+        self.assertEqual(code_matches["match_count"][0], "1")
+        self.assertEqual(data_matches["match_count"][0], "1")
+        self.assertEqual(code_matches["match"][0].lower(), code_address.lower())
+        self.assertEqual(data_matches["match"][0].lower(), data_address.lower())
+        self.assertGreaterEqual(int(code_signature["byte_count"][0]), 1)
+        self.assertGreaterEqual(int(data_signature["byte_count"][0]), 1)
+
+    def test_create_signature_rejects_addresses_outside_loaded_modules(self) -> None:
+        heap_address = self.target_symbols["g_heap_signature_anchor"]
+
+        response = PipeClient(
+            self.target_pid,
+            timeout_ms=5000,
+        ).request("create_signature", address=heap_address, max_bytes=16)
+
+        with self.assertRaises(NativeRequestError) as context:
+            response.raise_for_error()
+
+        self.assertEqual(context.exception.code, "address_not_in_module")
+        self.assertEqual(context.exception.one("address").lower(), heap_address.lower())
+        self.assertEqual(context.exception.one("requested_max_bytes"), "16")
+
+        with self.assertRaises(RuntimeError) as runtime_context:
+            _send_native_request(
+                self.session_manager,
+                self.target_pid,
+                "create_signature",
+                process_name=TARGET_PROCESS_NAME,
+                address=heap_address,
+                max_bytes=16,
+            )
+
+        message = str(runtime_context.exception)
+        self.assertIn("address_not_in_module", message)
+        self.assertIn(f"address={heap_address.lower()}", message.lower())
+        self.assertIn("requested_max_bytes=16", message)
 
     def test_pattern_scan_supports_separate_mask_and_offset(self) -> None:
         marker_pattern = "49 4E 54 45 52 4E 41 4C 5F 44 45 42 55 47 47 45 52 5F 4D 43 50 5F 50 41 54 54 45 52 4E"

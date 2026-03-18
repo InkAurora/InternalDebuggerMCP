@@ -19,6 +19,7 @@ std::uint64_t g_write_target = 0x0123456789ABCDEFULL;
 volatile std::uint64_t g_read_watch_target = 0x0102030405060708ULL;
 volatile std::uint64_t g_read_watch_sink = 0;
 volatile std::uint64_t g_write_watch_target = 0x8877665544332211ULL;
+unsigned char* g_heap_signature_anchor = nullptr;
 char g_aob_data_anchor[] = "AOB_PATTERN_ANCHOR_20260311_SIG";
 char g_pattern[] = "INTERNAL_DEBUGGER_MCP_PATTERN";
 std::uint8_t g_bytes[] = {0x55, 0x48, 0x89, 0xE5, 0x90, 0xC3};
@@ -105,11 +106,18 @@ void PrintAddress(const char* label, const void* value) {
 }  // namespace
 
 int main() {
+    g_heap_signature_anchor = static_cast<unsigned char*>(HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, 64));
+    if (g_heap_signature_anchor == nullptr) {
+        std::cerr << "Failed to allocate heap signature anchor\n";
+        return 1;
+    }
+
     std::cout << "TestTarget PID: " << GetCurrentProcessId() << '\n';
     PrintAddress("g_counter", &g_counter);
     PrintAddress("g_write_target", &g_write_target);
     PrintAddress("g_read_watch_target", const_cast<std::uint64_t*>(&g_read_watch_target));
     PrintAddress("g_write_watch_target", const_cast<std::uint64_t*>(&g_write_watch_target));
+    PrintAddress("g_heap_signature_anchor", g_heap_signature_anchor);
     PrintAddress("g_aob_data_anchor", g_aob_data_anchor);
     PrintAddress("g_aob_code_anchor", const_cast<unsigned char*>(g_aob_code_anchor));
     PrintAddress("g_pattern", g_pattern);

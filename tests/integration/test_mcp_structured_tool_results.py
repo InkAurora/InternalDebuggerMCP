@@ -36,7 +36,7 @@ def _read_target_startup(process) -> dict[str, str]:
 
         text = line.strip()
         if text == "READY":
-            required = {"g_write_target", "g_read_watch_target", "g_write_watch_target", "g_aob_data_anchor", "g_aob_code_anchor"}
+            required = {"g_write_target", "g_read_watch_target", "g_write_watch_target", "g_heap_signature_anchor", "g_aob_data_anchor", "g_aob_code_anchor"}
             missing = required.difference(symbols)
             if missing:
                 raise AssertionError(f"Missing startup symbols: {', '.join(sorted(missing))}")
@@ -588,6 +588,112 @@ class McpStructuredToolResultsTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(len(code_pattern.structuredContent["mask"]), code_pattern.structuredContent["byte_count"])
         self.assertEqual(len(data_pattern.structuredContent["mask"]), data_pattern.structuredContent["byte_count"])
+
+    async def test_create_signature_returns_module_scoped_round_trip_results(self) -> None:
+        target_path = REPO_ROOT / "artifacts" / "Release" / "x64" / "TestTarget" / "TestTarget.exe"
+        if not target_path.exists():
+            raise unittest.SkipTest(f"Missing build artifact: {target_path}")
+
+        target = subprocess.Popen(
+            [str(target_path)],
+            cwd=REPO_ROOT,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            bufsize=1,
+        )
+        assert target.stdout is not None
+        symbols = _read_target_startup(target)
+
+        server = StdioServerParameters(
+            command=sys.executable,
+            args=[str(MCP_SRC / "launch.py")],
+            cwd=str(MCP_SRC),
+            env={"PYTHONUTF8": "1", "PYTHONUNBUFFERED": "1"},
+        )
+
+        code_address = f"0x{int(symbols['g_aob_code_anchor'], 16) + 1:X}"
+        data_address = f"0x{int(symbols['g_aob_data_anchor'], 16) + 4:X}"
+
+        try:
+            async with stdio_client(server) as (read_stream, write_stream):
+                async with ClientSession(read_stream, write_stream) as session:
+                    await session.initialize()
+
+                    code_signature = await session.call_tool(
+                        "create_signature",
+                        {
+                            "pid": target.pid,
+                            "process_name": TARGET_PROCESS_NAME,
+                            "address": code_address,
+                            "max_bytes": 64,
+                        },
+                    )
+                    data_signature = await session.call_tool(
+                        "create_signature",
+                        {
+                            "pid": target.pid,
+                            "process_name": TARGET_PROCESS_NAME,
+                            "address": data_address,
+                            "max_bytes": 64,
+                        },
+                    )
+
+                    code_scan = await session.call_tool(
+                        "pattern_scan",
+                        {
+                            "pid": target.pid,
+                            "process_name": TARGET_PROCESS_NAME,
+                            "pattern": code_signature.structuredContent["pattern"],
+                            "start_address": code_signature.structuredContent["base_address"],
+                            "region_size": code_signature.structuredContent["image_size"],
+                            "limit": 2,
+                        },
+                    )
+                    data_scan = await session.call_tool(
+                        "pattern_scan",
+                        {
+                            "pid": target.pid,
+                            "process_name": TARGET_PROCESS_NAME,
+                            "pattern": data_signature.structuredContent["pattern"],
+                            "start_address": data_signature.structuredContent["base_address"],
+                            "region_size": data_signature.structuredContent["image_size"],
+                            "limit": 2,
+                        },
+                    )
+        finally:
+            if target.poll() is None:
+                target.terminate()
+                try:
+                    target.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    target.kill()
+                    target.wait(timeout=5)
+            if target.stdout is not None:
+                target.stdout.close()
+
+        self.assertFalse(code_signature.isError)
+        self.assertFalse(data_signature.isError)
+        self.assertFalse(code_scan.isError)
+        self.assertFalse(data_scan.isError)
+        self.assertEqual(code_signature.content, [])
+        self.assertEqual(data_signature.content, [])
+
+        assert code_signature.structuredContent is not None
+        assert data_signature.structuredContent is not None
+        assert code_scan.structuredContent is not None
+        assert data_scan.structuredContent is not None
+
+        self.assertEqual(code_signature.structuredContent["module_name"].lower(), TARGET_PROCESS_NAME.lower())
+        self.assertEqual(data_signature.structuredContent["module_name"].lower(), TARGET_PROCESS_NAME.lower())
+        self.assertEqual(code_signature.structuredContent["match_count"], 1)
+        self.assertEqual(data_signature.structuredContent["match_count"], 1)
+        self.assertEqual(code_scan.structuredContent["match_count"], 1)
+        self.assertEqual(data_scan.structuredContent["match_count"], 1)
+        self.assertEqual(code_scan.structuredContent["matches"][0].lower(), code_address.lower())
+        self.assertEqual(data_scan.structuredContent["matches"][0].lower(), data_address.lower())
+        self.assertGreaterEqual(code_signature.structuredContent["byte_count"], 1)
+        self.assertGreaterEqual(data_signature.structuredContent["byte_count"], 1)
 
     async def test_pattern_scan_accepts_separate_mask_and_returns_match_starts(self) -> None:
         target_path = REPO_ROOT / "artifacts" / "Release" / "x64" / "TestTarget" / "TestTarget.exe"

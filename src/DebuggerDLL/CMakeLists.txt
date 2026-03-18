@@ -5,6 +5,7 @@ set(DEBUGGER_DLL_SOURCES
     src/IpcServer.cpp
     src/MemoryReader.cpp
     src/PatternGenerator.cpp
+    src/SignatureGenerator.cpp
     src/PatternScanner.cpp
     src/WatchManager.cpp
     src/Disassembler.cpp

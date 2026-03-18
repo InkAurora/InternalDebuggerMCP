@@ -811,6 +811,36 @@ def create_mcp(session_manager: SessionManager) -> FastMCP:
             payload["target_offset"] = int(fields["target_offset"][0])
         return _structured_result(payload)
 
+    @mcp.tool(description="Generate a module-scoped signature that begins at the requested readable address and uses inline ?? wildcards when needed. Returns the module bounds needed to re-scan inside the same scope. Requires both pid and process_name for stale-PID recovery.")
+    async def create_signature(
+        pid: int,
+        process_name: str,
+        address: str,
+        max_bytes: int = 64,
+        dll_path: str | None = None,
+    ) -> StructuredToolResult:
+        fields = await request(
+            pid,
+            process_name,
+            "create_signature",
+            dll_path=dll_path,
+            address=address,
+            max_bytes=max_bytes,
+        )
+        return _structured_result(
+            {
+                "address": fields["address"][0],
+                "module_name": fields["module_name"][0],
+                "base_address": fields["base_address"][0],
+                "image_size": int(fields["image_size"][0]),
+                "module_path": fields["module_path"][0],
+                "pattern": fields["pattern"][0],
+                "match_count": int(fields["match_count"][0]),
+                "byte_count": int(fields["byte_count"][0]),
+                "wildcard_count": int(fields["wildcard_count"][0]),
+            }
+        )
+
     @mcp.tool(description="Start polling a target address for changes and create a watch that can be queried for change events. Requires both pid and process_name for stale-PID recovery.")
     async def watch_address(
         pid: int,
