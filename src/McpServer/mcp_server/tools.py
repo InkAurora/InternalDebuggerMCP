@@ -777,7 +777,7 @@ def create_mcp(session_manager: SessionManager) -> FastMCP:
             payload["match_starts"] = fields["match_start"]
         return _structured_result(payload)
 
-    @mcp.tool(description="Generate a process-wide unique x64dbg-style AOB pattern for a readable target address. The generated pattern may begin before the requested address and can optionally include a mask and target offset. Requires both pid and process_name for stale-PID recovery.")
+    @mcp.tool(description="Deprecated: generate a process-wide unique x64dbg-style AOB pattern for a readable target address. Prefer create_signature for new callers; keep create_aob_pattern only for compatibility cases that still require mask, pattern_start, or target_offset semantics. Requires both pid and process_name for stale-PID recovery.")
     async def create_aob_pattern(
         pid: int,
         process_name: str,
@@ -804,6 +804,9 @@ def create_mcp(session_manager: SessionManager) -> FastMCP:
             "match_count": int(fields["match_count"][0]),
             "byte_count": int(fields["byte_count"][0]),
             "wildcard_count": int(fields["wildcard_count"][0]),
+            "deprecated": fields.get("deprecated", ["0"])[0] == "1",
+            "replacement_tool": fields["replacement_tool"][0],
+            "deprecation_message": fields["deprecation_message"][0],
         }
         if "mask" in fields:
             payload["mask"] = fields["mask"][0]

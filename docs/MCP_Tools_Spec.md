@@ -17,8 +17,8 @@ If an auto-injecting tool targets a process whose debugger pipe is not yet reach
 - `get_module_base(pid, process_name, module, dll_path=None)`
 - `rebase_address(pid, process_name, module, direction, offset=None, address=None, dll_path=None)`
 - `pattern_scan(pid, process_name, pattern, mask=None, target_offset=None, start_address=None, region_size=None, limit=32, dll_path=None)`
-- `create_aob_pattern(pid, process_name, address, max_bytes=64, include_mask=False, include_offset=False, dll_path=None)`
 - `create_signature(pid, process_name, address, max_bytes=64, dll_path=None)`
+- `create_aob_pattern(pid, process_name, address, max_bytes=64, include_mask=False, include_offset=False, dll_path=None)` — deprecated; use `create_signature` for new callers
 - `watch_address(pid, process_name, address, size, interval_ms=250, watch_id=None, dll_path=None)`
 - `unwatch_address(pid, process_name, watch_id, dll_path=None)`
 - `poll_watch_events(pid, process_name, limit=16, dll_path=None)`
@@ -34,7 +34,7 @@ If an auto-injecting tool targets a process whose debugger pipe is not yet reach
 
 - Addresses are provided as hex strings.
 - Memory bytes are returned as space-separated hex.
-- `read_memory`, `write_memory`, `memory_verify_failed`, `disassemble`, and unreadable-address `create_aob_pattern` failures may include extra native diagnostic fields such as `address`, `requested_size`, `requested_max_bytes`, `memory_reason`, `region_base`, `region_size`, `region_state`, `region_protect`, `win32_error_detail`, and `copy_exception_code`.
+- `read_memory`, `write_memory`, `memory_verify_failed`, `disassemble`, unreadable-address `create_aob_pattern`, and unreadable-address `create_signature` failures may include extra native diagnostic fields such as `address`, `requested_size`, `requested_max_bytes`, `memory_reason`, `region_base`, `region_size`, `region_state`, `region_protect`, `win32_error_detail`, and `copy_exception_code`.
 - Auto-injecting tools now require both `pid` and `process_name`. The pipe protocol remains PID-based; `process_name` is used only as an exact-match fallback when the supplied PID no longer attaches cleanly.
 - Exact process-name fallback fails if zero or multiple matching processes are found.
 - `write_memory` accepts either `bytes_hex` or `text`; text payloads are encoded as `ascii`, `utf-8`, or `utf-16-le` before the native write.
@@ -47,14 +47,17 @@ If an auto-injecting tool targets a process whose debugger pipe is not yet reach
 - `pattern_scan` also accepts an optional `mask` string of `x` and `?` characters. The mask length must match the pattern byte count after tokenization.
 - `pattern_scan` may be called with both a wildcard AOB string and a `mask`, but the request is only valid if every `??` byte also maps to a `?` mask position.
 - When `target_offset` is supplied to `pattern_scan`, the returned `matches` point at the adjusted target address and the raw pattern-start anchors are returned separately as `match_starts`.
+- `create_signature` generates a module-scoped unique signature that always begins at the requested address and returns inline `??` wildcards directly in the pattern text.
+- `create_signature` also returns `base_address` and `image_size` for the containing module so callers can re-run `pattern_scan` inside the same scope.
+- `create_signature` fails with `address_not_in_module` when the requested readable address is outside every loaded module, such as heap memory.
+- `create_aob_pattern` is deprecated because it is process-wide and materially slower on live targets than `create_signature`.
 - `create_aob_pattern` generates the shortest unique process-wide pattern it can find for the requested readable address, returning an x64dbg-style AOB string.
 - `create_aob_pattern` may start the pattern before the requested address. `pattern_start` identifies the scan anchor, and `target_offset` can be requested to point back to the original address.
 - `create_aob_pattern` optionally returns a per-byte mask string alongside the AOB when `include_mask=True`.
 - `create_aob_pattern` currently searches up to `128` bytes and defaults to `64` bytes when `max_bytes` is omitted.
 - `create_aob_pattern(..., include_mask=True, include_offset=True)` can be round-tripped directly into `pattern_scan` by passing the returned `pattern`, `mask`, and `target_offset` back to the scanner.
-- `create_signature` generates a module-scoped unique signature that always begins at the requested address and returns inline `??` wildcards directly in the pattern text.
-- `create_signature` also returns `base_address` and `image_size` for the containing module so callers can re-run `pattern_scan` inside the same scope.
-- `create_signature` fails with `address_not_in_module` when the requested readable address is outside every loaded module, such as heap memory.
+- Successful `create_aob_pattern` responses also include `deprecated=true`, `replacement_tool="create_signature"`, and a `deprecation_message` string so callers can surface migration guidance at runtime.
+- New examples, scripts, and callers should prefer `create_signature`; keep `create_aob_pattern` only when the old `mask` or `target_offset` contract is still required.
 - `dll_path` is optional and lets the caller override the default debugger DLL for that request.
 - `eject_debugger` does not auto-inject. It clears any tracked MCP session state for the PID and best-effort ejects the debugger DLL, preferring the live pipe path and falling back to `Injector.exe --eject` when the pipe is stale or already gone.
 - `list_modules` returns `enumeration_method="toolhelp_snapshot"` in addition to the module list.

@@ -556,9 +556,8 @@ class AutoInjectionRequestsTest(unittest.TestCase):
             )
             self.assertEqual(ping["pid"][0], str(self.target_pid))
 
-    def test_create_aob_pattern_round_trips_for_code_and_data(self) -> None:
+    def test_create_aob_pattern_remains_available_for_compatibility(self) -> None:
         code_address = f"0x{int(self.target_symbols['g_aob_code_anchor'], 16) + 1:X}"
-        data_address = f"0x{int(self.target_symbols['g_aob_data_anchor'], 16) + 4:X}"
 
         code_pattern = _send_native_request(
             self.session_manager,
@@ -566,16 +565,6 @@ class AutoInjectionRequestsTest(unittest.TestCase):
             "create_aob_pattern",
             process_name=TARGET_PROCESS_NAME,
             address=code_address,
-            max_bytes=64,
-            include_mask=1,
-            include_offset=1,
-        )
-        data_pattern = _send_native_request(
-            self.session_manager,
-            self.target_pid,
-            "create_aob_pattern",
-            process_name=TARGET_PROCESS_NAME,
-            address=data_address,
             max_bytes=64,
             include_mask=1,
             include_offset=1,
@@ -591,36 +580,20 @@ class AutoInjectionRequestsTest(unittest.TestCase):
             target_offset=code_pattern["target_offset"][0],
             limit=2,
         )
-        data_matches = _send_native_request(
-            self.session_manager,
-            self.target_pid,
-            "pattern_scan",
-            process_name=TARGET_PROCESS_NAME,
-            pattern=data_pattern["pattern"][0],
-            mask=data_pattern["mask"][0],
-            target_offset=data_pattern["target_offset"][0],
-            limit=2,
-        )
 
         self.assertEqual(code_pattern["match_count"][0], "1")
-        self.assertEqual(data_pattern["match_count"][0], "1")
+        self.assertEqual(code_pattern["deprecated"][0], "1")
+        self.assertEqual(code_pattern["replacement_tool"][0], "create_signature")
+        self.assertIn("create_aob_pattern is deprecated", code_pattern["deprecation_message"][0])
         self.assertEqual(code_matches["match_count"][0], "1")
-        self.assertEqual(data_matches["match_count"][0], "1")
         self.assertEqual(code_matches["match"][0].lower(), code_address.lower())
-        self.assertEqual(data_matches["match"][0].lower(), data_address.lower())
         self.assertEqual(code_matches["match_start"][0].lower(), code_pattern["pattern_start"][0].lower())
-        self.assertEqual(data_matches["match_start"][0].lower(), data_pattern["pattern_start"][0].lower())
 
         self.assertEqual(
             int(code_pattern["pattern_start"][0], 16) + int(code_pattern["target_offset"][0]),
             int(code_address, 16),
         )
-        self.assertEqual(
-            int(data_pattern["pattern_start"][0], 16) + int(data_pattern["target_offset"][0]),
-            int(data_address, 16),
-        )
         self.assertEqual(len(code_pattern["mask"][0]), int(code_pattern["byte_count"][0]))
-        self.assertEqual(len(data_pattern["mask"][0]), int(data_pattern["byte_count"][0]))
 
     def test_create_signature_round_trips_for_code_and_data_with_module_scope(self) -> None:
         code_address = f"0x{int(self.target_symbols['g_aob_code_anchor'], 16) + 1:X}"

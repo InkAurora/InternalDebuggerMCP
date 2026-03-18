@@ -21,6 +21,10 @@ namespace idmcp {
 
 namespace {
 
+constexpr std::string_view kCreateAobPatternReplacementTool = "create_signature";
+constexpr std::string_view kCreateAobPatternDeprecationMessage =
+    "create_aob_pattern is deprecated; prefer create_signature unless you still require mask, pattern_start, or target_offset semantics.";
+
 struct ModuleRecord {
     std::string name;
     std::uintptr_t baseAddress;
@@ -863,6 +867,7 @@ std::string DebuggerService::Dispatch(const std::string& request) {
     if (*command == "pattern_scan") {
         return HandlePatternScan(message);
     }
+    // Deprecated compatibility path. Keep this command available while callers migrate to create_signature.
     if (*command == "create_aob_pattern") {
         return HandleCreateAobPattern(message);
     }
@@ -1091,6 +1096,7 @@ std::string DebuggerService::HandlePatternScan(const ParsedMessage& message) con
     return MakeOk(std::move(fields));
 }
 
+// Deprecated compatibility handler. Preserve the legacy result shape until create_aob_pattern is removed.
 std::string DebuggerService::HandleCreateAobPattern(const ParsedMessage& message) const {
     const auto address = ParseAddress(message.GetFirst("address").value_or(""));
     const auto maxBytes = ParseUnsigned(message.GetFirst("max_bytes").value_or(std::to_string(kDefaultGeneratedPatternBytes)));
@@ -1126,6 +1132,9 @@ std::string DebuggerService::HandleCreateAobPattern(const ParsedMessage& message
         {"match_count", std::to_string(result.matchCount)},
         {"byte_count", std::to_string(result.pattern.size())},
         {"wildcard_count", std::to_string(PatternGenerator::CountWildcards(result.pattern))},
+        {"deprecated", "1"},
+        {"replacement_tool", std::string(kCreateAobPatternReplacementTool)},
+        {"deprecation_message", std::string(kCreateAobPatternDeprecationMessage)},
     };
     if (includeMask) {
         fields.emplace_back("mask", PatternGenerator::FormatMask(result.pattern));

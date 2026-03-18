@@ -473,7 +473,7 @@ class McpStructuredToolResultsTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("mov", read_results.structuredContent["sources"][0]["instruction"].lower())
         self.assertIn("mov", write_results.structuredContent["sources"][0]["instruction"].lower())
 
-    async def test_create_aob_pattern_returns_unique_round_trip_results(self) -> None:
+    async def test_create_aob_pattern_remains_available_for_compatibility(self) -> None:
         target_path = REPO_ROOT / "artifacts" / "Release" / "x64" / "TestTarget" / "TestTarget.exe"
         if not target_path.exists():
             raise unittest.SkipTest(f"Missing build artifact: {target_path}")
@@ -497,7 +497,6 @@ class McpStructuredToolResultsTest(unittest.IsolatedAsyncioTestCase):
         )
 
         code_address = f"0x{int(symbols['g_aob_code_anchor'], 16) + 1:X}"
-        data_address = f"0x{int(symbols['g_aob_data_anchor'], 16) + 4:X}"
 
         try:
             async with stdio_client(server) as (read_stream, write_stream):
@@ -515,17 +514,6 @@ class McpStructuredToolResultsTest(unittest.IsolatedAsyncioTestCase):
                             "include_offset": True,
                         },
                     )
-                    data_pattern = await session.call_tool(
-                        "create_aob_pattern",
-                        {
-                            "pid": target.pid,
-                            "process_name": TARGET_PROCESS_NAME,
-                            "address": data_address,
-                            "max_bytes": 64,
-                            "include_mask": True,
-                            "include_offset": True,
-                        },
-                    )
 
                     code_scan = await session.call_tool(
                         "pattern_scan",
@@ -535,17 +523,6 @@ class McpStructuredToolResultsTest(unittest.IsolatedAsyncioTestCase):
                             "pattern": code_pattern.structuredContent["pattern"],
                             "mask": code_pattern.structuredContent["mask"],
                             "target_offset": code_pattern.structuredContent["target_offset"],
-                            "limit": 2,
-                        },
-                    )
-                    data_scan = await session.call_tool(
-                        "pattern_scan",
-                        {
-                            "pid": target.pid,
-                            "process_name": TARGET_PROCESS_NAME,
-                            "pattern": data_pattern.structuredContent["pattern"],
-                            "mask": data_pattern.structuredContent["mask"],
-                            "target_offset": data_pattern.structuredContent["target_offset"],
                             "limit": 2,
                         },
                     )
@@ -561,33 +538,23 @@ class McpStructuredToolResultsTest(unittest.IsolatedAsyncioTestCase):
                 target.stdout.close()
 
         self.assertFalse(code_pattern.isError)
-        self.assertFalse(data_pattern.isError)
         self.assertFalse(code_scan.isError)
-        self.assertFalse(data_scan.isError)
 
         assert code_pattern.structuredContent is not None
-        assert data_pattern.structuredContent is not None
         assert code_scan.structuredContent is not None
-        assert data_scan.structuredContent is not None
 
         self.assertEqual(code_pattern.structuredContent["match_count"], 1)
-        self.assertEqual(data_pattern.structuredContent["match_count"], 1)
+        self.assertTrue(code_pattern.structuredContent["deprecated"])
+        self.assertEqual(code_pattern.structuredContent["replacement_tool"], "create_signature")
+        self.assertIn("create_aob_pattern is deprecated", code_pattern.structuredContent["deprecation_message"])
         self.assertEqual(code_scan.structuredContent["match_count"], 1)
-        self.assertEqual(data_scan.structuredContent["match_count"], 1)
         self.assertEqual(code_scan.structuredContent["matches"][0].lower(), code_address.lower())
-        self.assertEqual(data_scan.structuredContent["matches"][0].lower(), data_address.lower())
         self.assertEqual(code_scan.structuredContent["match_starts"][0].lower(), code_pattern.structuredContent["pattern_start"].lower())
-        self.assertEqual(data_scan.structuredContent["match_starts"][0].lower(), data_pattern.structuredContent["pattern_start"].lower())
         self.assertEqual(
             int(code_pattern.structuredContent["pattern_start"], 16) + code_pattern.structuredContent["target_offset"],
             int(code_address, 16),
         )
-        self.assertEqual(
-            int(data_pattern.structuredContent["pattern_start"], 16) + data_pattern.structuredContent["target_offset"],
-            int(data_address, 16),
-        )
         self.assertEqual(len(code_pattern.structuredContent["mask"]), code_pattern.structuredContent["byte_count"])
-        self.assertEqual(len(data_pattern.structuredContent["mask"]), data_pattern.structuredContent["byte_count"])
 
     async def test_create_signature_returns_module_scoped_round_trip_results(self) -> None:
         target_path = REPO_ROOT / "artifacts" / "Release" / "x64" / "TestTarget" / "TestTarget.exe"
