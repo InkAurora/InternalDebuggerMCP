@@ -257,8 +257,8 @@ bool PatternGenerator::IsUniqueCandidate(
     const std::uintptr_t expectedMatch,
     const ReadableMemoryRegions& regions) const {
     const auto compiled = patternScanner_.CompilePattern(pattern);
-    const auto matches = patternScanner_.ScanCompiledPrepared(compiled, regions, 2);
-    return matches.size() == 1 && matches.front() == expectedMatch;
+    const auto summary = patternScanner_.CountCompiledPrepared(compiled, regions, 2, expectedMatch);
+    return summary.matchCount == 1 && summary.expectedMatchSeen;
 }
 
 void PatternGenerator::BuildExactPattern(

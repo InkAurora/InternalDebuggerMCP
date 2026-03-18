@@ -58,6 +58,29 @@ namespace {
         return nullptr;
     }
 
+    if (pattern.anchorLength >= 3) {
+        const auto anchorLength = static_cast<std::ptrdiff_t>(pattern.anchorLength);
+        const auto* last = end - anchorLength;
+        const auto anchorLastByte = pattern.pattern[pattern.anchorOffset + pattern.anchorLength - 1].value;
+        const auto prefixLength = pattern.anchorLength - 1;
+        const auto* cursor = begin;
+        while (cursor <= last) {
+            const auto candidateLastByte = cursor[prefixLength];
+            bool prefixMatches = candidateLastByte == anchorLastByte;
+            for (std::size_t index = 0; prefixMatches && index < prefixLength; ++index) {
+                if (cursor[index] != pattern.pattern[pattern.anchorOffset + index].value) {
+                    prefixMatches = false;
+                }
+            }
+            if (prefixMatches) {
+                return cursor;
+            }
+
+            cursor += static_cast<std::ptrdiff_t>(pattern.anchorShift[candidateLastByte]);
+        }
+        return nullptr;
+    }
+
     const auto anchorFirstByte = pattern.pattern[pattern.anchorOffset].value;
     const auto* cursor = begin;
     const auto* last = end - static_cast<std::ptrdiff_t>(pattern.anchorLength);
@@ -192,6 +215,14 @@ CompiledPattern PatternScanner::CompilePattern(const std::vector<PatternByte>& p
 
     compiled.anchorOffset = bestAnchorStart;
     compiled.anchorLength = bestAnchorLength;
+    if (bestAnchorLength != 0) {
+        compiled.anchorShift.fill(bestAnchorLength);
+        if (bestAnchorLength > 1) {
+            for (std::size_t index = 0; index + 1 < bestAnchorLength; ++index) {
+                compiled.anchorShift[pattern[bestAnchorStart + index].value] = bestAnchorLength - 1 - index;
+            }
+        }
+    }
 
     return compiled;
 }
@@ -286,6 +317,106 @@ std::vector<std::uintptr_t> PatternScanner::ScanCompiledPrepared(
     }
 
     return matches;
+}
+
+MatchScanResult PatternScanner::CountCompiledPrepared(
+    const CompiledPattern& pattern,
+    const ReadableMemoryRegions& regions,
+    const std::size_t limit,
+    const std::optional<std::uintptr_t> expectedMatch) const {
+    MatchScanResult result;
+    if (pattern.pattern.empty() || limit == 0) {
+        return result;
+    }
+
+    auto scanRegion = [&](const MEMORY_BASIC_INFORMATION& region) {
+        const auto base = reinterpret_cast<std::uintptr_t>(region.BaseAddress);
+        if (region.RegionSize < pattern.pattern.size()) {
+            return false;
+        }
+
+        const auto* bytes = reinterpret_cast<const std::uint8_t*>(base);
+        const auto last = region.RegionSize - pattern.pattern.size();
+
+        auto recordMatch = [&](const std::size_t candidateOffset) {
+            ++result.matchCount;
+            if (expectedMatch.has_value() && base + candidateOffset == *expectedMatch) {
+                result.expectedMatchSeen = true;
+            }
+            return result.matchCount >= limit;
+        };
+
+        if (pattern.anchorLength == pattern.pattern.size()) {
+            const auto* cursor = bytes;
+            const auto* end = bytes + region.RegionSize;
+            while (const auto* match = FindAnchorMatch(cursor, end, pattern)) {
+                if (recordMatch(static_cast<std::size_t>(match - bytes))) {
+                    return true;
+                }
+                cursor = match + 1;
+            }
+            return false;
+        }
+
+        if (pattern.anchorLength != 0) {
+            const auto searchStart = bytes + pattern.anchorOffset;
+            const auto searchLength = region.RegionSize - pattern.anchorOffset;
+            const auto* cursor = searchStart;
+            const auto* end = searchStart + searchLength;
+            while (const auto* match = FindAnchorMatch(cursor, end, pattern)) {
+                const auto matchOffset = static_cast<std::size_t>(match - bytes);
+                if (matchOffset >= pattern.anchorOffset) {
+                    const auto candidateOffset = matchOffset - pattern.anchorOffset;
+                    if (candidateOffset <= last && MatchesCompiledAt(pattern, bytes + candidateOffset)) {
+                        if (recordMatch(candidateOffset)) {
+                            return true;
+                        }
+                    }
+                }
+                cursor = match + 1;
+            }
+            return false;
+        }
+
+        for (std::size_t offset = 0; offset <= last; ++offset) {
+            if (!MatchesAtGuarded(pattern.pattern, bytes + offset)) {
+                continue;
+            }
+
+            if (recordMatch(offset)) {
+                return true;
+            }
+        }
+
+        return false;
+    };
+
+    std::optional<std::size_t> preferredRegionIndex;
+    if (expectedMatch.has_value()) {
+        for (std::size_t index = 0; index < regions.size(); ++index) {
+            const auto base = reinterpret_cast<std::uintptr_t>(regions[index].BaseAddress);
+            const auto end = base + regions[index].RegionSize;
+            if (*expectedMatch >= base && *expectedMatch < end) {
+                preferredRegionIndex = index;
+                break;
+            }
+        }
+    }
+
+    if (preferredRegionIndex.has_value() && scanRegion(regions[*preferredRegionIndex])) {
+        return result;
+    }
+
+    for (std::size_t index = 0; index < regions.size(); ++index) {
+        if (preferredRegionIndex.has_value() && index == *preferredRegionIndex) {
+            continue;
+        }
+        if (scanRegion(regions[index])) {
+            break;
+        }
+    }
+
+    return result;
 }
 
 }  // namespace idmcp

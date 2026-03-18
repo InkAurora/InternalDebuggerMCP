@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <array>
 #include <optional>
 #include <string>
 #include <vector>
@@ -25,6 +26,12 @@ struct CompiledPattern {
     std::vector<ExactPatternByte> exactBytes;
     std::size_t anchorOffset{0};
     std::size_t anchorLength{0};
+    std::array<std::size_t, 256> anchorShift{};
+};
+
+struct MatchScanResult {
+    std::size_t matchCount{0};
+    bool expectedMatchSeen{false};
 };
 
 using ReadableMemoryRegions = std::vector<MEMORY_BASIC_INFORMATION>;
@@ -57,6 +64,11 @@ public:
         const CompiledPattern& pattern,
         const ReadableMemoryRegions& regions,
         std::size_t limit) const;
+    [[nodiscard]] MatchScanResult CountCompiledPrepared(
+        const CompiledPattern& pattern,
+        const ReadableMemoryRegions& regions,
+        std::size_t limit,
+        std::optional<std::uintptr_t> expectedMatch = std::nullopt) const;
 
 private:
     const MemoryReader& memoryReader_;
