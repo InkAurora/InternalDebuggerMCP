@@ -17,7 +17,7 @@ namespace {
 
 [[nodiscard]] std::string FormatMemoryOperand(
     const std::uint8_t modrm,
-    const std::vector<std::uint8_t>& bytes,
+    std::span<const std::uint8_t> bytes,
     const std::size_t offset,
     const std::uint8_t rex) {
     constexpr std::array<const char*, 16> registerNames{
@@ -99,9 +99,59 @@ Instruction MakeDbInstruction(const std::uintptr_t address, const std::uint8_t b
 
 }  // namespace
 
+bool Disassembler::FindCodeAwareWildcardSpans(
+    std::span<const std::uint8_t> bytes,
+    std::vector<WildcardSpan>& spans) const {
+    spans.clear();
+    spans.reserve(bytes.size() / 2U);
+
+    std::size_t offset = 0;
+    while (offset < bytes.size()) {
+        const auto remaining = bytes.size() - offset;
+
+        if (remaining >= 3 && bytes[offset] == 0x48 && (bytes[offset + 1] == 0x89 || bytes[offset + 1] == 0x8B)) {
+            const auto modrm = bytes[offset + 2];
+            const auto displacementLength = MemoryOperandLength(modrm);
+            if (displacementLength > 0 || ((modrm >> 6U) & 0x03U) != 0b11U) {
+                const auto instructionLength = 3 + displacementLength;
+                if (remaining >= instructionLength) {
+                    if ((modrm >> 6U) == 0b00U && (modrm & 0x07U) == 0b101U && instructionLength >= 7) {
+                        spans.push_back(WildcardSpan{offset + instructionLength - 4, offset + instructionLength});
+                    }
+                    offset += instructionLength;
+                    continue;
+                }
+            }
+        }
+
+        if (remaining >= 5 && (bytes[offset] == 0xE8 || bytes[offset] == 0xE9)) {
+            spans.push_back(WildcardSpan{offset + 1, offset + 5});
+            offset += 5;
+            continue;
+        }
+
+        if (remaining >= 3 && bytes[offset] == 0x48 && bytes[offset + 1] == 0x89 && bytes[offset + 2] == 0xE5) {
+            offset += 3;
+            continue;
+        }
+        if (remaining >= 4 && bytes[offset] == 0x48 && bytes[offset + 1] == 0x83 && bytes[offset + 2] == 0xEC) {
+            offset += 4;
+            continue;
+        }
+        if (remaining >= 1 && (bytes[offset] == 0x55 || bytes[offset] == 0xC3 || bytes[offset] == 0x90 || bytes[offset] == 0xCC)) {
+            offset += 1;
+            continue;
+        }
+
+        offset += 1;
+    }
+
+    return !spans.empty();
+}
+
 std::vector<Instruction> Disassembler::Disassemble(
     const std::uintptr_t address,
-    const std::vector<std::uint8_t>& bytes,
+    std::span<const std::uint8_t> bytes,
     const std::size_t maxInstructions) const {
     std::vector<Instruction> instructions;
     instructions.reserve(std::min<std::size_t>(maxInstructions, bytes.size()));
@@ -203,6 +253,13 @@ std::vector<Instruction> Disassembler::Disassemble(
     }
 
     return instructions;
+}
+
+std::vector<Instruction> Disassembler::Disassemble(
+    const std::uintptr_t address,
+    const std::vector<std::uint8_t>& bytes,
+    const std::size_t maxInstructions) const {
+    return Disassemble(address, std::span<const std::uint8_t>(bytes.data(), bytes.size()), maxInstructions);
 }
 
 }  // namespace idmcp

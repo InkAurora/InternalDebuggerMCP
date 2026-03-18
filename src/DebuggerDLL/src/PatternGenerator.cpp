@@ -32,11 +32,6 @@ struct CandidateRegionContext {
     bool executable = false;
 };
 
-struct WildcardSpan {
-    std::size_t start = 0;
-    std::size_t end = 0;
-};
-
 [[nodiscard]] bool TryGetCandidateRegionContext(
     const std::uintptr_t address,
     CandidateRegionContext& context) {
@@ -66,35 +61,10 @@ struct WildcardSpan {
 bool TryBuildCodeAwareWildcardSpans(
     const Disassembler& disassembler,
     const std::uintptr_t start,
-    const std::vector<std::uint8_t>& bytes,
+    std::span<const std::uint8_t> bytes,
     std::vector<WildcardSpan>& spans) {
-    spans.clear();
-    auto instructions = disassembler.Disassemble(start, bytes, bytes.size());
-    spans.reserve(instructions.size());
-    for (auto& instruction : instructions) {
-        const auto offset = static_cast<std::size_t>(instruction.address - start);
-        if (instruction.bytes.empty()) {
-            continue;
-        }
-
-        if ((instruction.mnemonic == "call" || instruction.mnemonic == "jmp") &&
-            instruction.bytes.size() == 5 &&
-            (instruction.bytes[0] == 0xE8 || instruction.bytes[0] == 0xE9)) {
-            spans.push_back(WildcardSpan{offset + 1, offset + instruction.bytes.size()});
-            continue;
-        }
-
-        if (instruction.mnemonic == "mov" &&
-            instruction.operands.find("[rip") != std::string::npos &&
-            instruction.bytes.size() >= 7) {
-            const auto wildcardStart = instruction.bytes.size() - 4;
-            spans.push_back(WildcardSpan{offset + wildcardStart, offset + instruction.bytes.size()});
-        }
-
-        std::fill(instruction.bytes.begin(), instruction.bytes.end(), static_cast<std::uint8_t>(0));
-    }
-
-    return !spans.empty();
+    static_cast<void>(start);
+    return disassembler.FindCodeAwareWildcardSpans(bytes, spans);
 }
 
 }  // namespace
@@ -159,15 +129,11 @@ bool PatternGenerator::Generate(
     if (candidateRegion.executable) {
         wildcardSpansByStart.resize(maxOffsetByStart + 1);
         for (std::size_t startOffset = 0; startOffset <= maxOffsetByStart; ++startOffset) {
-            std::vector<std::uint8_t> suffixBytes(
-                rawWindow.begin() + static_cast<std::ptrdiff_t>(startOffset),
-                rawWindow.end());
             TryBuildCodeAwareWildcardSpans(
                 disassembler_,
                 windowStart + startOffset,
-                suffixBytes,
+                std::span<const std::uint8_t>(rawWindow.data() + static_cast<std::ptrdiff_t>(startOffset), rawWindow.size() - startOffset),
                 wildcardSpansByStart[startOffset]);
-            std::fill(suffixBytes.begin(), suffixBytes.end(), static_cast<std::uint8_t>(0));
         }
     }
 
