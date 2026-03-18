@@ -635,6 +635,36 @@ class AutoInjectionRequestsTest(unittest.TestCase):
                 max_bytes=1,
             )
 
+    def test_create_aob_pattern_memory_failures_include_diagnostics(self) -> None:
+        response = PipeClient(
+            self.target_pid,
+            timeout_ms=5000,
+        ).request("create_aob_pattern", address="0x1", max_bytes=16)
+
+        with self.assertRaises(NativeRequestError) as context:
+            response.raise_for_error()
+
+        self.assertEqual(context.exception.code, "memory_read_failed")
+        self.assertEqual(context.exception.one("address"), "0x1")
+        self.assertEqual(context.exception.one("requested_max_bytes"), "16")
+        self.assertEqual(context.exception.one("memory_reason"), "region_not_committed")
+
+        with self.assertRaises(RuntimeError) as runtime_context:
+            _send_native_request(
+                self.session_manager,
+                self.target_pid,
+                "create_aob_pattern",
+                process_name=TARGET_PROCESS_NAME,
+                address="0x1",
+                max_bytes=16,
+            )
+
+        message = str(runtime_context.exception)
+        self.assertIn("memory_read_failed", message)
+        self.assertIn("address=0x1", message)
+        self.assertIn("requested_max_bytes=16", message)
+        self.assertIn("reason=region_not_committed", message)
+
 
 class NameFallbackAutoInjectionRequestsTest(unittest.TestCase):
     @classmethod

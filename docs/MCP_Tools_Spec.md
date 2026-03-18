@@ -33,7 +33,7 @@ If an auto-injecting tool targets a process whose debugger pipe is not yet reach
 
 - Addresses are provided as hex strings.
 - Memory bytes are returned as space-separated hex.
-- `read_memory`, `write_memory`, `memory_verify_failed`, and `disassemble` failures may include extra native diagnostic fields such as `address`, `requested_size`, `memory_reason`, `region_base`, `region_size`, `region_state`, `region_protect`, `win32_error_detail`, and `copy_exception_code`.
+- `read_memory`, `write_memory`, `memory_verify_failed`, `disassemble`, and unreadable-address `create_aob_pattern` failures may include extra native diagnostic fields such as `address`, `requested_size`, `requested_max_bytes`, `memory_reason`, `region_base`, `region_size`, `region_state`, `region_protect`, `win32_error_detail`, and `copy_exception_code`.
 - Auto-injecting tools now require both `pid` and `process_name`. The pipe protocol remains PID-based; `process_name` is used only as an exact-match fallback when the supplied PID no longer attaches cleanly.
 - Exact process-name fallback fails if zero or multiple matching processes are found.
 - `write_memory` accepts either `bytes_hex` or `text`; text payloads are encoded as `ascii`, `utf-8`, or `utf-16-le` before the native write.

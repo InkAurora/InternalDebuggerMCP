@@ -69,8 +69,14 @@ bool PatternGenerator::Generate(
     const std::uintptr_t address,
     const std::size_t maxBytes,
     GeneratedPatternResult& result,
-    std::string& error) const {
+    std::string& error,
+    MemoryAccessDiagnostics* diagnostics) const {
     error.clear();
+    if (diagnostics != nullptr) {
+        *diagnostics = {};
+        diagnostics->address = address;
+        diagnostics->size = 1;
+    }
     if (address == 0) {
         error = "address_required";
         return false;
@@ -79,7 +85,7 @@ bool PatternGenerator::Generate(
         error = "invalid_max_bytes";
         return false;
     }
-    if (!memoryReader_.IsReadable(address, 1)) {
+    if (!memoryReader_.IsReadable(address, 1, diagnostics)) {
         error = "memory_read_failed";
         return false;
     }

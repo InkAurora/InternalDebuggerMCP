@@ -455,6 +455,14 @@ void PrepareInvokeCall(
     return fields;
 }
 
+[[nodiscard]] std::vector<MessageField> BuildRequestedAddressFields(
+    const std::uintptr_t address,
+    std::initializer_list<MessageField> extraFields = {}) {
+    std::vector<MessageField> fields{{"address", ToHex(address)}};
+    fields.insert(fields.end(), extraFields.begin(), extraFields.end());
+    return fields;
+}
+
 [[nodiscard]] std::string BaseName(std::string_view path) {
     const auto lastSlash = path.find_last_of("\\/");
     if (lastSlash == std::string_view::npos) {
@@ -1086,8 +1094,21 @@ std::string DebuggerService::HandleCreateAobPattern(const ParsedMessage& message
 
     GeneratedPatternResult result{};
     std::string error;
-    if (!patternGenerator_.Generate(*address, static_cast<std::size_t>(*maxBytes), result, error)) {
-        return MakeError(error, "unable to generate a unique AOB pattern");
+    MemoryAccessDiagnostics diagnostics;
+    if (!patternGenerator_.Generate(*address, static_cast<std::size_t>(*maxBytes), result, error, &diagnostics)) {
+        if (error == "memory_read_failed") {
+            auto fields = BuildMemoryAccessErrorFields(diagnostics);
+            fields.emplace_back("requested_max_bytes", std::to_string(*maxBytes));
+            return MakeError(
+                error,
+                DescribeMemoryAccessFailure("generate AOB pattern", diagnostics),
+                std::move(fields));
+        }
+
+        return MakeError(
+            error,
+            std::format("unable to generate a unique AOB pattern at {} within {} bytes", ToHex(*address), *maxBytes),
+            BuildRequestedAddressFields(*address, {{"requested_max_bytes", std::to_string(*maxBytes)}}));
     }
 
     std::vector<MessageField> fields{

@@ -412,6 +412,7 @@ def _format_native_failure(error: _NativeRequestFailure) -> str:
     for key, label in (
         ("address", "address"),
         ("requested_size", "requested_size"),
+        ("requested_max_bytes", "requested_max_bytes"),
         ("memory_reason", "reason"),
         ("region_base", "region_base"),
         ("region_size", "region_size"),

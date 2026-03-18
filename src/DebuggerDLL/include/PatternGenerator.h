@@ -19,6 +19,7 @@ struct GeneratedPatternResult {
 };
 
 class MemoryReader;
+struct MemoryAccessDiagnostics;
 
 class PatternGenerator {
 public:
@@ -28,7 +29,8 @@ public:
         std::uintptr_t address,
         std::size_t maxBytes,
         GeneratedPatternResult& result,
-        std::string& error) const;
+        std::string& error,
+        MemoryAccessDiagnostics* diagnostics = nullptr) const;
 
     [[nodiscard]] static std::string FormatPattern(const std::vector<PatternByte>& pattern);
     [[nodiscard]] static std::string FormatMask(const std::vector<PatternByte>& pattern);
